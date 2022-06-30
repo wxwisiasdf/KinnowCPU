@@ -1,9 +1,12 @@
+`ifndef LIMN2600_DRAM128_H
+`define LIMN2600_DRAM128_H
+
 ///////////////////////////////////////////////////////////////////////////////
 //
-// Limine2600 DRAM (128K)
+// Limn2600 DRAM (128K)
 //
 ///////////////////////////////////////////////////////////////////////////////
-module limine2600_dram(
+module limn2600_dram(
     input rst,
     input clk,
     input we,
@@ -43,3 +46,5 @@ module limine2600_dram(
         $display("RAM > addr=0x%8x,we=%1d,data_in=0x%8h,data_out=0x%8h", addr, we, data_in, data_out);
     end
 endmodule
+
+`endif

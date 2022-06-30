@@ -1,10 +1,68 @@
+`ifndef LIMN2600_CPU_H
+`define LIMN2600_CPU_H
 
 ///////////////////////////////////////////////////////////////////////////////
 //
-// Limine2600 CPU
+// Limn2600 ALU
 //
 ///////////////////////////////////////////////////////////////////////////////
-module limine2600_cpu(
+module limn2600_alu(
+    input rst,
+    input clk,
+    input [3:0] op, // 4-bits are only used for operators
+    input [31:0] a,
+    input [31:0] b,
+    output reg [31:0] c
+);
+    parameter
+        OP_NOP = 4'b1???, // Also includes MOVS, out of our scope
+        OP_SLT = 4'b0101, // TODO: What SLT does?
+        OP_SLTS = 4'b0100, // TODO: What SLTS does?
+        OP_ADD = 4'b0111,
+        OP_SUB = 4'b0110,
+        OP_AND = 4'b0011,
+        OP_XOR = 4'b0010,
+        OP_OR = 4'b0001,
+        OP_NOR = 4'b0000;
+    
+    always @(rst) begin
+        // ...
+    end
+    
+    always @(posedge clk) begin
+        casez(op)
+        OP_SLT: begin
+            end
+        OP_SLTS: begin
+            end
+        OP_ADD: begin
+            c <= a + b;
+            end
+        OP_SUB: begin
+            c <= a - b;
+            end
+        OP_AND: begin
+            c <= a & b;
+            end
+        OP_XOR: begin
+            c <= a ^ b;
+            end
+        OP_OR: begin
+            c <= a | b;
+            end
+        OP_NOR: begin
+            c <= ~(a | b);
+            end
+        endcase
+    end
+endmodule
+
+///////////////////////////////////////////////////////////////////////////////
+//
+// Limn2600 CPU
+//
+///////////////////////////////////////////////////////////////////////////////
+module limn2600_cpu(
     input rst,
     input clk,
     output reg we,
@@ -489,3 +547,5 @@ module limine2600_cpu(
         endcase
     end
 endmodule
+
+`endif

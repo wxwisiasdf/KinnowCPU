@@ -3,11 +3,11 @@
 
 ///////////////////////////////////////////////////////////////////////////////
 //
-// Limine2600 System
+// Limn2600 System
 //
 ///////////////////////////////////////////////////////////////////////////////
 `timescale 1ns / 1ps
-module limine2600_system;
+module limn2600_system;
     reg rst;
     reg clk;
     wire we;
@@ -17,7 +17,7 @@ module limine2600_system;
     wire irq;
     wire rdy;
 
-    limine2600_cpu cpu(
+    limn2600_cpu cpu(
         .rst(rst),
         .clk(clk),
         .we(we),
@@ -28,7 +28,7 @@ module limine2600_system;
         .data_out(data_from_cpu)
     );
 
-    limine2600_dram ram(
+    limn2600_dram ram(
         .rst(rst),
         .clk(clk),
         .we(we),
