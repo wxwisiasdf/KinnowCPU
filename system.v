@@ -40,19 +40,22 @@ module limn2600_system;
 
     initial begin
         clk = 1'b0;
+`ifdef SIMULATE
         forever
             #2 clk = ~clk;
+`endif
     end
 
     initial begin
         $display("Limn2600 Verilog SoC!");
 
+`ifdef SIMULATE
         // "Press" reset button
         #0 rst = 1'b1;
         #1 rst = 1'b0;
 
         #10000 rst = 1'b0;
-
         $finish;
+`endif
     end
 endmodule

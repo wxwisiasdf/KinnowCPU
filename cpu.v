@@ -3,62 +3,6 @@
 
 ///////////////////////////////////////////////////////////////////////////////
 //
-// Limn2600 ALU
-//
-///////////////////////////////////////////////////////////////////////////////
-module limn2600_alu(
-    input rst,
-    input clk,
-    input [3:0] op, // 4-bits are only used for operators
-    input [31:0] a,
-    input [31:0] b,
-    output reg [31:0] c
-);
-    parameter
-        OP_NOP = 4'b1???, // Also includes MOVS, out of our scope
-        OP_SLT = 4'b0101, // TODO: What SLT does?
-        OP_SLTS = 4'b0100, // TODO: What SLTS does?
-        OP_ADD = 4'b0111,
-        OP_SUB = 4'b0110,
-        OP_AND = 4'b0011,
-        OP_XOR = 4'b0010,
-        OP_OR = 4'b0001,
-        OP_NOR = 4'b0000;
-    
-    always @(rst) begin
-        // ...
-    end
-    
-    always @(posedge clk) begin
-        casez(op)
-        OP_SLT: begin
-            end
-        OP_SLTS: begin
-            end
-        OP_ADD: begin
-            c <= a + b;
-            end
-        OP_SUB: begin
-            c <= a - b;
-            end
-        OP_AND: begin
-            c <= a & b;
-            end
-        OP_XOR: begin
-            c <= a ^ b;
-            end
-        OP_OR: begin
-            c <= a | b;
-            end
-        OP_NOR: begin
-            c <= ~(a | b);
-            end
-        endcase
-    end
-endmodule
-
-///////////////////////////////////////////////////////////////////////////////
-//
 // Limn2600 CPU
 //
 ///////////////////////////////////////////////////////////////////////////////
@@ -246,14 +190,14 @@ module limn2600_cpu(
             casez(inst_lo)
             // JALR [rd], [ra], [imm29]
             OP_JALR: begin
-                $display("jalr r%d,r%d,[%h]", opreg1, opreg2, imm16 << 2);
+                $display("jalr r%d,r%d,[%h]", opreg1, opreg2, { 8'h0, imm16 } << 2);
                 regs[opreg1] <= pc + 4;
-                pc <= regs[opreg2] + (imm16 << 2); // TODO: Sign extend
+                pc <= regs[opreg2] + ({ 8'h0, imm16 } << 2); // TODO: Sign extend
                 end
-            // JAL [lr] [imm29]
+            // JAL [imm29]
             OP_JAL: begin
+                $display("jal [0x%8h],lr=0x%8h", { 3'h0, imm29 } << 2, pc + 4);
                 regs[REG_LR] <= pc + 4;
-                $display("jal [0x%8h],lr=0x%8h", imm29 << 2, pc + 4);
                 pc <= (pc & 32'h80000000) | ({ 3'h0, imm29 } << 2);
                 end
             // J [imm29]
@@ -340,25 +284,25 @@ module limn2600_cpu(
                 end
             // MOV [ra + imm16], rb
             OP_MOV16: begin
-                $display("mov(16) [r%d+%h],r%d,sz=%b", opreg1, imm16, opreg2, inst_lo[4:3]);
+                $display("mov(16) [r%d+%h],r%d,sz=%b", opreg1, { 8'h0, imm16 }, opreg2, inst_lo[4:3]);
                 rw_memsize <= inst_lo[4:3]; // Check OP_G1_MV_BITMASK
                 write_value <= regs[opreg2];
-                write_addr <= regs[opreg1] + imm16;
+                write_addr <= regs[opreg1] + { 8'h0, imm16 };
                 state <= S_WRITE_WAIT;
                 pc <= pc + 4;
                 end
             // MOV [ra + imm16], imm5
             OP_MOV5: begin
-                $display("mov(16) [r%d+%h],r%d,sz=%b", opreg1, imm16, imm5, inst_lo[4:3]);
+                $display("mov(5) [r%d+%h],[%d],sz=%b", opreg1, { 8'h0, imm16 }, imm5, inst_lo[4:3]);
                 rw_memsize <= inst_lo[4:3]; // Check OP_G1_MV_BITMASK
-                write_value <= imm16;
-                write_addr <= regs[opreg1] + imm16;
+                write_value <= { 8'h0, imm16 };
+                write_addr <= regs[opreg1] + { 8'h0, imm16 };
                 state <= S_WRITE_WAIT;
                 pc <= pc + 4;
                 end
             // Instructions starting with 111001
             OP_GRP1: begin
-                $display("alu_inst r%d,r%d,r%d,instmode=%b,op=%b", opreg1, opreg2, opreg3, opg1_instmode, inst_hi[5:2]);
+                $display("alu_inst r%d,r%d,r%d,instmode=%b,op=%b", opreg1, opreg2, opreg3, opg1_instmode, inst_hi);
                 // Instmode
                 casez(opg1_instmode)
                 OPM_G1_LHS: tmp32 <= regs[opreg3] >> { 26'h0, imm5};
@@ -368,18 +312,39 @@ module limn2600_cpu(
                 endcase
 
                 casez(inst_hi[5:2])
-                OP_G1_NOP: regs[opreg1] <= tmp32;
-                OP_G1_ADD: regs[opreg1] <= regs[opreg2] + tmp32;
-                OP_G1_SUB: regs[opreg1] <= regs[opreg2] - tmp32;
-                OP_G1_AND: regs[opreg1] <= regs[opreg2] & tmp32;
-                OP_G1_XOR: regs[opreg1] <= regs[opreg2] ^ tmp32;
-                OP_G1_OR: regs[opreg1] <= regs[opreg2] | tmp32;
-                OP_G1_NOR: regs[opreg1] <= ~(regs[opreg2] | tmp32);
+                OP_G1_NOP: begin
+                    $display("nop");
+                    regs[opreg1] <= tmp32;
+                    end
+                OP_G1_ADD: begin
+                    $display("add");
+                    regs[opreg1] <= regs[opreg2] + tmp32;
+                    end
+                OP_G1_SUB: begin
+                    $display("sub");
+                    regs[opreg1] <= regs[opreg2] - tmp32;
+                    end
+                OP_G1_AND: begin
+                    $display("and");
+                    regs[opreg1] <= regs[opreg2] & tmp32;
+                    end
+                OP_G1_XOR: begin
+                    $display("xor");
+                    regs[opreg1] <= regs[opreg2] ^ tmp32;
+                    end
+                OP_G1_OR: begin
+                    $display("or");
+                    regs[opreg1] <= regs[opreg2] | tmp32;
+                    end
+                OP_G1_NOR: begin
+                    $display("nor");
+                    regs[opreg1] <= ~(regs[opreg2] | tmp32);
+                    end
                 default: begin end
                 endcase
 
-                // These low 2-bits are indicative of whatever or not this is a mov
-                if(inst_hi[3:2] != 2'b00) begin
+                // These high 1 bit is indicative of a MOV, the following 3 bytes MUST have atleast one set
+                if(inst_hi[5] == 1'b1 && (inst_hi[4:2] & 3'b111) != 0) begin
                     casez(inst_hi[5:2])
                     OP_G1_MOV_FR: begin // Move-From-Registers
                         $display("mov [r%d+r%d+%d],r%d,sz=%b", opreg2, opreg3, imm5, opreg1, inst_hi[3:2]);
@@ -508,9 +473,11 @@ module limn2600_cpu(
             endcase
 
             $display("CPU > state=%d,pc=0x%8h,data_in=0x%8h,data_out=0x%8h,addr=0x%8h", state, pc, data_in, data_out, addr);
+`ifdef DEBUG
             for(integer i = 0; i < 32; i = i + 8) begin
                 $display("%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h", i, regs[i], i + 1, regs[i + 1], i + 2, regs[i + 2], i + 3, regs[i + 3], i + 4, regs[i + 4], i + 5, regs[i + 5], i + 6, regs[i + 6], i + 7, regs[i + 7]);
             end
+`endif
             end
         // Wait until RAM indicates it's ready
         S_DECODE_WAIT: begin
@@ -528,7 +495,9 @@ module limn2600_cpu(
                 we <= 1'b1; // Enable write
                 state <= S_SELECT;
             end
+`ifdef DEBUG
             $display("write_wait addr=0x%h,sz=%d,v=0x%h,data_in=0x%h", write_addr, rw_memsize, write_value, data_in);
+`endif
             end
         S_READ_WAIT: begin
             we <= 1'b0; // Disable write
@@ -541,7 +510,9 @@ module limn2600_cpu(
             if(rdy) begin
                 state <= S_SELECT;
             end
+`ifdef DEBUG
             $display("read_wait addr=0x%h,sz=%,r=%d,v=0x%h", read_addr, rw_memsize, read_regno, regs[read_regno]);
+`endif
             end
         default: begin end
         endcase

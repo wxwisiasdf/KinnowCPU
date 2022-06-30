@@ -22,15 +22,21 @@ module limn2600_dram(
         if(we) begin
             if(addr[31:16] == 16'h0000) begin
                 ram[addr[15:0] >> 2] <= data_in;
+`ifdef DEBUG
                 $display("ram_write data=0x%8h=>addr=0x%8h", data_in, addr);
+`endif
             end
         end
         if(addr[31:16] == 16'h0000) begin
             data_out <= ram[addr[15:0] >> 2];
+`ifdef DEBUG
             $display("ram_read data=0x%8h=>addr=0x%8h", data_in, addr);
+`endif
         end else begin
             data_out <= rom[addr[15:0] >> 2];
+`ifdef DEBUG
             $display("rom_read data=0x%8h=>addr=0x%8h", data_in, addr);
+`endif
         end
         rdy <= 1'b1;
     end
@@ -41,10 +47,12 @@ module limn2600_dram(
         rdy = 1'b0;
     end
 
+`ifdef DEBUG
     // Monitor
     always @(posedge clk) begin
         $display("RAM > addr=0x%8x,we=%1d,data_in=0x%8h,data_out=0x%8h", addr, we, data_in, data_out);
     end
+`endif
 endmodule
 
 `endif
