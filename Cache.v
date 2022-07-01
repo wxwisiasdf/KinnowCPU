@@ -18,10 +18,11 @@ module limn2600_Cache(
     output reg [31:0] data_out // Output data
 );
     reg [4095:0] cache[0:16]; // Up to 16-pages stored
+    integer i;
 
     // Reset cache
     always @(rst) begin
-        for(integer i = 0; i < 16; i++) begin
+        for(i = 0; i < 16; i++) begin
             cache[i] = 4096'h0;
         end
     end

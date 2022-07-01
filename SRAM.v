@@ -19,6 +19,8 @@ module limn2600_SRAM(
     reg [31:0] rom[0:65535]; // Bank 1 - READ ONLY
     reg [31:0] ram[0:65535]; // Bank 2 - READ-WRITE
 
+    integer i;
+
     always @(posedge clk) begin
         if(cs) begin
             if(we) begin
@@ -45,7 +47,7 @@ module limn2600_SRAM(
 
     // Initialize RAM with ROM
     initial begin
-        for(integer i = 0; i < 65535; i++) begin
+        for(i = 0; i < 65535; i++) begin
             ram[i] = 32'h0;
         end
         $readmemh("rom.txt", rom);
