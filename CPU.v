@@ -187,11 +187,16 @@ module limn2600_CPU(
 
     // Fetch
     always @(posedge clk) begin
+        cs <= 1;
+        addr <= rw_addr;
+        if(stall_fetch) begin
+            $display("cpu: STALLED FETCH!");
+        end
+
         if(!stall_fetch) begin
             $display("cpu: Fetching,num=%d", fetch_inst_queue_num);
             addr <= fetch_addr;
             we <= 0; // Read from memory
-            cs <= 1;
             // Once we can fetch instructions we save the state, but only if
             // we aren't overwriting something being used by the executor!
             if(rdy && (fetch_inst_queue_num + 1) != execute_inst_queue_num) begin
@@ -202,6 +207,57 @@ module limn2600_CPU(
                 fetch_inst_queue[fetch_inst_queue_num + 1] <= OP_TRULY_NOP;
                 fetch_inst_queue_num <= fetch_inst_queue_num + 1;
                 fetch_addr <= fetch_addr + 4; // Advance to next op
+            end
+        end else if(state == S_READ) begin
+            $display("cpu: S_READ");
+            stall_fetch <= 1;
+            we <= 0; // Read value and emplace on register
+            if(rdy) begin // Appropriately apply masks
+                casez(trans_size)
+                OP_G1_MV_BYTE: begin // 1-bytes, 4-per-cell
+                    regs[read_regno] <= (data_in & 32'hFF) << ((rw_addr & 32'd3) << 32'd3);
+                    end
+                OP_G1_MV_INT: begin // 2-bytes, 2-per-cell
+                    regs[read_regno] <= (data_in & 32'hFFFF) << ((rw_addr & 32'd1) << 32'd4);
+                    end
+                OP_G1_MV_LONG: begin // 4-bytes, 1-per-cell
+                    regs[read_regno] <= (data_in & 32'hFFFFFFFF);
+                    end
+                endcase
+                state <= S_FETCH;
+                stall_fetch <= 0;
+            end
+        end else if(state == S_PREWRITE) begin
+            // Prewrite is in charge of reading the value and then writting it back with the desired offset
+            // so we can support unaligned accesses
+            $display("cpu: S_PREWRITE");
+            stall_fetch <= 1;
+            we <= 0; // Read the value first
+            if(rdy) begin
+                // Appropriately apply masks
+                casez(trans_size)
+                OP_G1_MV_BYTE: begin // 1-bytes, 4-per-cell
+                    write_value <= data_in | ((write_value & 32'hFF) << ((rw_addr & 32'd3) << 32'd2));
+                    end
+                OP_G1_MV_INT: begin // 2-bytes, 2-per-cell
+                    write_value <= data_in | ((write_value & 32'hFFFF) << ((rw_addr & 32'd1) << 32'd4));
+                    end
+                OP_G1_MV_LONG: begin // 4-bytes, 1-per-cell
+                    write_value <= data_in | (write_value & 32'hFFFFFFFF);
+                    end
+                endcase
+                state <= S_WRITE;
+                $display("cpu: write_value=0x%h,rw_addr=0x%h,data_in=0x%h", write_value, rw_addr, data_in);
+            end
+        end else if(state == S_WRITE) begin
+            $display("cpu: S_WRITE");
+            stall_fetch <= 1;
+            we <= 1; // Write the value, then return to fetching
+            data_out <= write_value;
+            if(rdy) begin
+                $display("cpu: data_out=0x%h,write_value=0x%h,addr=0x%h", data_out, write_value, addr);
+                state <= S_FETCH;
+                stall_fetch <= 0;
             end
         end
     end
@@ -332,6 +388,7 @@ module limn2600_CPU(
                     read_regno <= opreg1;
                     rw_addr <= regs[opreg2] + { 16'h0, imm16 };
                     state <= S_READ;
+                    stall_fetch <= 1;
                     pc <= pc + 4;
                     end
                 6'b??_?010: begin // MOV [ra + imm16], rd
@@ -344,6 +401,7 @@ module limn2600_CPU(
                     end
                     rw_addr <= regs[opreg1] + { 16'h0, imm16 };
                     state <= S_PREWRITE;
+                    stall_fetch <= 1;
                     pc <= pc + 4;
                     end
                 // Instructions starting with 111001
@@ -414,6 +472,7 @@ module limn2600_CPU(
                                 write_value <= regs[opreg1];
                                 rw_addr <= regs[opreg2] + tmp32;
                                 state <= S_PREWRITE;
+                                stall_fetch <= 1;
                                 end
                             OP_G1_MOV_TR: begin // Move-To-Register
                                 $display("cpu: mov r%d,[r%d+r%d+%d],sz=%b", opreg1, opreg2, opreg3, imm5, inst_hi[3:2]);
@@ -421,6 +480,7 @@ module limn2600_CPU(
                                 read_regno <= opreg1;
                                 rw_addr <= regs[opreg2] + tmp32;
                                 state <= S_READ;
+                                stall_fetch <= 1;
                                 end
                             default: begin end
                         endcase
@@ -569,70 +629,7 @@ module limn2600_CPU(
     // rememeber that we also need to write bytes so unaligned accesses
     // are allowed by the CPU because fuck you
     always @(posedge clk) begin
-        if(state == S_PREWRITE) begin
-            $display("cpu: S_PREWRITE");
-            we <= 0; // Read the value first
-            cs <= 1;
-            addr <= rw_addr;
-            if(rdy) begin
-                // Appropriately apply masks
-                casez(trans_size)
-                OP_G1_MV_BYTE: begin // 1-bytes, 4-per-cell
-                    write_value <= data_in | ((write_value & 32'hFF) << ((rw_addr & 32'd3) << 32'd2));
-                    end
-                OP_G1_MV_INT: begin // 2-bytes, 2-per-cell
-                    write_value <= data_in | ((write_value & 32'hFFFF) << ((rw_addr & 32'd1) << 32'd4));
-                    end
-                OP_G1_MV_LONG: begin // 4-bytes, 1-per-cell
-                    write_value <= data_in | (write_value & 32'hFFFFFFFF);
-                    end
-                endcase
-                state <= S_WRITE;
-                $display("cpu: write_value=0x%h,rw_addr=0x%h,data_in=0x%h", write_value, rw_addr, data_in);
-            end
-        end
-    end
 
-    always @(posedge clk) begin
-        if(state == S_WRITE) begin
-            $display("cpu: S_WRITE");
-            we <= 1; // Write the value, then return to fetching
-            cs <= 1;
-            data_out <= write_value;
-            addr <= rw_addr;
-            if(rdy) begin
-                state <= S_FETCH;
-                $display("cpu: data_out=0x%h,write_value=0x%h,addr=0x%h", data_out, write_value, addr);
-            end
-        end
-    end
-
-    always @(posedge clk) begin
-        // Always disable commands for RAM, unless we send them at the end of this tick
-        // which means the RAM will be busy processing stuff but it can indicate when it finished
-        // via the RDY pin
-        //cs <= 0;
-
-        if(state == S_READ) begin
-            $display("cpu: S_READ");
-            we <= 0; // Read value and emplace on register
-            cs <= 1;
-            if(rdy) begin
-                // Appropriately apply masks
-                casez(trans_size)
-                OP_G1_MV_BYTE: begin // 1-bytes, 4-per-cell
-                    regs[read_regno] <= (data_in & 32'hFF) << ((rw_addr & 32'd3) << 32'd3);
-                    end
-                OP_G1_MV_INT: begin // 2-bytes, 2-per-cell
-                    regs[read_regno] <= (data_in & 32'hFFFF) << ((rw_addr & 32'd1) << 32'd4);
-                    end
-                OP_G1_MV_LONG: begin // 4-bytes, 1-per-cell
-                    regs[read_regno] <= (data_in & 32'hFFFFFFFF);
-                    end
-                endcase
-                state <= S_FETCH;
-            end
-        end
     end
 endmodule
 
