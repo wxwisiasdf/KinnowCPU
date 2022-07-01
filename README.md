@@ -1,6 +1,6 @@
-# KinnowCPU
-
 ![Title](https://raw.githubusercontent.com/wxwisiasdf/KinnowCPU/main/title.png)
+
+![CI](https://github.com/wxwisiasdf/KinnowCPU/actions/workflows/auto.yaml/badge.svg?branch=main)
 
 A nice CPU implementing the Limn2600 architecture.
 

@@ -1,0 +1,14 @@
+name: KinnowCPU
+on:
+  push
+jobs:
+  build_linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: "Install"
+      run: |
+        sudo apt install verilator iverilog
+    - name: "Build"
+      run: |
+        sh build.sh
