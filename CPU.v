@@ -40,9 +40,14 @@ module limn2600_CPU(
     localparam S_WRITE = 3;
     localparam S_READ = 4;
     localparam S_HALT = 5;
+    localparam S_BRANCHED = 6;
     
     // Instruction decoder
-    reg [31:0] fetched_inst; // Instruction fetched
+    reg [31:0] fetch_inst_queue[0:16]; // Instruction fetched
+    reg [31:0] fetch_addr; // Address to fetch on, reset on JAL/J/BR
+    reg [3:0] fetch_inst_queue_num;
+    reg [3:0] execute_inst_queue_num;
+
     reg [31:0] execute_inst; // Instruction to execute
     wire [28:0] imm29 = execute_inst[31:3];
     wire [22:0] imm21 = execute_inst[31:9];
@@ -150,10 +155,15 @@ module limn2600_CPU(
     always @(rst) begin
         pc <= 32'hFFFE0000;
         state <= S_FETCH;
-        fetched_inst <= OP_TRULY_NOP;
+        for(integer i = 0; i < 16; i++) begin
+            fetch_inst_queue[i] <= OP_TRULY_NOP;
+        end
+        fetch_inst_queue_num = 4'd14;
+        execute_inst_queue_num = 4'd15;
         execute_inst <= OP_TRULY_NOP;
         stall_execute <= 0;
         stall_fetch <= 0;
+        fetch_addr <= 32'hFFFE0000;
     end
 
     always @(posedge irq) begin
@@ -161,7 +171,12 @@ module limn2600_CPU(
         pc <= ctl_regs[CREG_EVEC];
         ctl_regs[CREG_RS][31:28] = ECAUSE_INTERRUPT;
         if(state == S_HALT) begin
-            state <= S_FETCH;
+            // Re-stall
+            stall_fetch <= 1;
+            state <= S_BRANCHED;
+        end else begin
+            stall_fetch <= 1;
+            state <= S_BRANCHED;
         end
     end
 
@@ -173,14 +188,20 @@ module limn2600_CPU(
     // Fetch
     always @(posedge clk) begin
         if(!stall_fetch) begin
-            $display("cpu: Fetching");
-            addr <= pc;
+            $display("cpu: Fetching,num=%d", fetch_inst_queue_num);
+            addr <= fetch_addr;
             we <= 0; // Read from memory
             cs <= 1;
-            // Once we can fetch instructions we save the state
-            if(rdy) begin
-                $display("cpu: Fetched inst=%b", data_in);
-                fetched_inst <= data_in;
+            // Once we can fetch instructions we save the state, but only if
+            // we aren't overwriting something being used by the executor!
+            if(rdy && (fetch_inst_queue_num + 1) != execute_inst_queue_num) begin
+                $display("cpu: Fetched inst=%b,fetch-num=%d,exec-num=%d", data_in, fetch_inst_queue_num, execute_inst_queue_num);
+                // We "clean-path" the element after the one we just placed
+                // this ensures there aren't any left-overs from fetching
+                fetch_inst_queue[fetch_inst_queue_num] <= data_in;
+                fetch_inst_queue[fetch_inst_queue_num + 1] <= OP_TRULY_NOP;
+                fetch_inst_queue_num <= fetch_inst_queue_num + 1;
+                fetch_addr <= fetch_addr + 4; // Advance to next op
             end
         end
     end
@@ -188,19 +209,23 @@ module limn2600_CPU(
     // Execution thread
     always @(posedge clk) begin
         if(!stall_execute) begin
-            $display("cpu: Execution");
-            execute_inst <= fetched_inst;
+            $display("cpu: Execution,num=%d", execute_inst_queue_num);
+            execute_inst <= fetch_inst_queue[execute_inst_queue_num];
+            execute_inst_queue_num <= execute_inst_queue_num + 1;
             state <= S_FETCH;
             casez(inst_lo)
                 // This is an invalid opcode, but used internally as a "true no-op", no PC is modified
                 // no anything is modified, good for continuing the executor without stanling
                 6'b00_0000: begin
+                    $display("cpu: tnop");
                     end
                 // JALR [rd], [ra], [imm29]
                 OP_JALR: begin
                     $display("cpu: jalr r%d,r%d,[%h]", opreg1, opreg2, { 8'h0, imm16 } << 2);
                     regs[opreg1] <= pc + 4;
                     pc <= regs[opreg2] + ({ 8'h0, imm16 } << 2); // TODO: Sign extend
+                    stall_fetch <= 1;
+                    state <= S_BRANCHED;
                     end
                 // JAL [imm29]
                 OP_J_OR_JAL: begin
@@ -209,12 +234,16 @@ module limn2600_CPU(
                         regs[REG_LR] <= pc + 4;
                     end
                     pc <= (pc & 32'h80000000) | ({ 3'h0, imm29 } << 2);
+                    stall_fetch <= 1;
+                    state <= S_BRANCHED;
                     end
                 // BEQ ra, [imm21]
                 OP_BEQ: begin
                     $display("cpu: beq r%d,[%h]", opreg1, imm21);
                     if(regs[opreg1] == 32'h0) begin
                         pc <= pc + ({ 9'h0, imm21 } << 2);
+                        stall_fetch <= 1;
+                        state <= S_BRANCHED;
                     end else begin
                         pc <= pc + 4;
                     end
@@ -224,6 +253,8 @@ module limn2600_CPU(
                     $display("cpu: bne r%d,[%h]", opreg1, imm21);
                     if(regs[opreg1] != 32'h0) begin
                         pc <= pc + ({ 9'h0, imm21 } << 2);
+                        stall_fetch <= 1;
+                        state <= S_BRANCHED;
                     end else begin
                         pc <= pc + 4;
                     end
@@ -233,6 +264,8 @@ module limn2600_CPU(
                     $display("cpu: blt r%d,[%h]", opreg1, imm21);
                     if((regs[opreg1] & 32'h80000000) == 0) begin
                         pc <= pc + ({ 9'h0, imm21 } << 2);
+                        stall_fetch <= 1;
+                        state <= S_BRANCHED;
                     end else begin
                         pc <= pc + 4;
                     end
@@ -433,6 +466,8 @@ module limn2600_CPU(
                             ctl_regs[CREG_EBADADDR] <= pc;
                             pc <= ctl_regs[CREG_EVEC];
                             ctl_regs[CREG_RS][31:28] = ECAUSE_BREAKPOINT;
+                            stall_fetch <= 1;
+                            state <= S_BRANCHED;
                             end
                         OP_G3_DIV: begin
                             if(opreg4 != 5'b0) begin
@@ -440,6 +475,8 @@ module limn2600_CPU(
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
+                                stall_fetch <= 1;
+                                state <= S_BRANCHED;
                             end else begin
                                 regs[opreg1] = regs[opreg2] / regs[opreg3];
                                 pc <= pc + 4;
@@ -451,6 +488,8 @@ module limn2600_CPU(
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
+                                stall_fetch <= 1;
+                                state <= S_BRANCHED;
                             end else begin
                                 // TODO: Properly perform signed division
                                 regs[opreg1] = { (regs[opreg2][31] | regs[opreg3][31]), (regs[opreg2] / regs[opreg3]) };
@@ -467,6 +506,8 @@ module limn2600_CPU(
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
+                                stall_fetch <= 1;
+                                state <= S_BRANCHED;
                             end else begin
                                 regs[opreg1] = regs[opreg2] % regs[opreg3];
                                 pc <= pc + 4;
@@ -478,6 +519,8 @@ module limn2600_CPU(
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
+                                stall_fetch <= 1;
+                                state <= S_BRANCHED;
                             end else begin
                                 regs[opreg1] = regs[opreg2] * regs[opreg3];
                                 pc <= pc + 4;
@@ -493,6 +536,8 @@ module limn2600_CPU(
                             ctl_regs[CREG_EBADADDR] <= pc;
                             pc <= ctl_regs[CREG_EVEC];
                             ctl_regs[CREG_RS][31:28] <= ECAUSE_SYSCALL;
+                            stall_fetch <= 1;
+                            state <= S_BRANCHED;
                             end
                         default: begin
                             end
@@ -503,6 +548,8 @@ module limn2600_CPU(
                     ctl_regs[CREG_EBADADDR] <= pc;
                     pc <= ctl_regs[CREG_EVEC];
                     ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
+                    stall_fetch <= 1;
+                    state <= S_BRANCHED;
                 end
             endcase
 
@@ -510,6 +557,11 @@ module limn2600_CPU(
             for(integer i = 0; i < 32; i = i + 8) begin
                 $display("cpu: %2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h", i, regs[i], i + 1, regs[i + 1], i + 2, regs[i + 2], i + 3, regs[i + 3], i + 4, regs[i + 4], i + 5, regs[i + 5], i + 6, regs[i + 6], i + 7, regs[i + 7]);
             end
+        end else if(state == S_BRANCHED) begin
+            // This is used to update the fetch address after an exception or PC, meaning we have to stall
+            // so let's unstall fetcher
+            fetch_addr <= pc;
+            stall_fetch <= 0;
         end
     end
 

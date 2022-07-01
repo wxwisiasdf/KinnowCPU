@@ -10,6 +10,6 @@ If you like cool graphs that do nothing but make you wonder "I can do better tha
 then realize the synthetizer is 5 parallel universes ahead of you. Then follow these steps:
 
 ```sh
-# install yosys and npm
-sudo apt install -y yosys npm
+# install yosys
+sudo apt install -y yosys
 ```
