@@ -1,4 +1,20 @@
-# limn2600 verilog
+# KinnowCPU
+
+![Title](https://raw.githubusercontent.com/wxwisiasdf/KinnowCPU/main/title.png)
+
+A nice CPU implementing the Limn2600 architecture.
+
+## Features
+* [x] ISA implemented
+* [x] Pipelining
+* [x] Parallel fetch and execution
+* [ ] Multicore support
+* [ ] Memory scheduling
+* [ ] Cache
+* [ ] Paging
+* [ ] TLB cache
+* [ ] Branch prediction
+
 Run this with your binary, non LOFF boot ROM:
 ```sh
 xxd -ps -e -c 4 src/boot.bin | awk '{print $2}' >rom.txt
