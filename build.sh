@@ -1,4 +1,4 @@
 #!/bin/sh
-rm Board.o
-iverilog Board.v -o Board.o || exit
-vvp Board.o >log.txt || exit
+rm system.o
+iverilog rtl/system.v -o system.o || exit
+vvp system.o >log.txt || exit

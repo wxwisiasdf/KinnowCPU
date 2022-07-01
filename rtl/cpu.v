@@ -7,47 +7,35 @@ module limn2600_ALU(
     output reg [31:0] out
 );
     // Arithmethic mode
-    parameter
-        OP_SLT = 3'b101,
-        OP_SLTS = 3'b100,
-        OP_ADD = 3'b111,
-        OP_SUB = 3'b110,
-        OP_AND = 3'b011,
-        OP_XOR = 3'b010,
-        OP_OR = 3'b001,
-        OP_NOR = 3'b000;
+    parameter OP_NOR = 3'b000;
 
     always @(posedge clk) begin
         casez(op)
-            OP_ADD: begin
+            3'b111: begin
                 $display("cpu: add");
                 out <= in0 + in0;
                 end
-            OP_SUB: begin
+            3'b110: begin
                 $display("cpu: sub");
                 out <= in0 - in1;
                 end
-            OP_AND: begin
+            3'b011: begin
                 $display("cpu: and");
                 out <= in0 & in1;
                 end
-            OP_XOR: begin
+            3'b010: begin
                 $display("cpu: xor");
                 out <= in0 ^ in1;
                 end
-            OP_OR: begin
+            3'b001: begin
                 $display("cpu: or");
                 out <= in0 | in1;
                 end
-            OP_NOR: begin
-                $display("cpu: nor");
-                out <= ~(in0 | in1);
-                end
-            OP_SLT: begin
+            3'b101: begin
                 $display("cpu: slt");
                 out = { 31'h0, in0 < in1 };
                 end
-            OP_SLTS: begin
+            3'b100: begin
                 $display("cpu: slts");
                 // tmp32 is positive, register is negative
                 if((in0 & 32'h80000000) != 0 && in1 & 32'h80000000 == 0) begin
@@ -58,6 +46,10 @@ module limn2600_ALU(
                 end else begin
                     out = { 31'h0, in0 < in1 };
                 end
+                end
+            OP_NOR: begin
+                $display("cpu: nor");
+                out <= ~(in0 | in1);
                 end
             default: begin
                 out <= 0;
@@ -136,15 +128,7 @@ module limn2600_CPU(
         OP_MOV16 = 6'b1?_?010,
         OP_MOV5 = 6'b0?_?010; // Advanced arithmethic, atomics, etc
     // Arithmethic mode
-    parameter
-        OP_SLT = 3'b101,
-        OP_SLTS = 3'b100,
-        OP_ADD = 3'b111,
-        OP_SUB = 3'b110,
-        OP_AND = 3'b011,
-        OP_XOR = 3'b010,
-        OP_OR = 3'b001,
-        OP_NOR = 3'b000;
+    parameter OP_NOR = 3'b000;
     // Group 1
     // Move's length
     parameter
@@ -221,7 +205,7 @@ module limn2600_CPU(
             fetch_inst_queue[i] <= OP_TRULY_NOP;
         end
         fetch_inst_queue_num <= 4'd14;
-        execute_inst_queue_num <= 4'd15;
+        execute_inst_queue_num <= 4'd14;
         execute_inst <= OP_TRULY_NOP;
         stall_execute <= 0;
         stall_fetch <= 0;
@@ -229,11 +213,11 @@ module limn2600_CPU(
     end
 
     always @(posedge irq) begin
+        $display("cpu: IRQ event!");
         ctl_regs[CREG_EBADADDR] <= pc;
         pc <= ctl_regs[CREG_EVEC];
         ctl_regs[CREG_RS][31:28] <= ECAUSE_INTERRUPT;
         if(state == S_HALT) begin
-            // Re-stall
             stall_fetch <= 1;
             state <= S_BRANCHED;
         end else begin
@@ -327,31 +311,31 @@ module limn2600_CPU(
                     end else begin // Rest of ops
                         regs[opreg1] <= regs[opreg2] ^ { 16'b0, imm16 };
                         casez(inst_lo[5:3])
-                            OP_ADD: begin
+                            3'b111: begin
                                 $display("cpu: add");
                                 regs[opreg1] <= regs[opreg2] + { 16'b0, imm16 };
                                 end
-                            OP_SUB: begin
+                            3'b110: begin
                                 $display("cpu: sub");
                                 regs[opreg1] <= regs[opreg2] - { 16'b0, imm16 };
                                 end
-                            OP_AND: begin
+                            3'b011: begin
                                 $display("cpu: and");
                                 regs[opreg1] <= regs[opreg2] & { 16'b0, imm16 };
                                 end
-                            OP_XOR: begin
+                            3'b010: begin
                                 $display("cpu: xor");
                                 regs[opreg1] <= regs[opreg2] ^ { 16'b0, imm16 };
                                 end
-                            OP_OR: begin
+                            3'b001: begin
                                 $display("cpu: or");
                                 regs[opreg1] <= regs[opreg2] | { 16'b0, imm16 };
                                 end
-                            OP_SLT: begin
+                            3'b101: begin
                                 $display("cpu: slt");
                                 regs[opreg1] <= { 31'h0, regs[opreg2] < { 16'b0, imm16 } };
                                 end
-                            OP_SLTS: begin
+                            3'b100: begin
                                 $display("cpu: slts");
                                 // { 16'b0, imm16 } is positive, register is negative
                                 if((regs[opreg2] & 32'h80000000) != 0 && { 16'b0, imm16 } & 32'h80000000 == 0) begin
@@ -374,7 +358,7 @@ module limn2600_CPU(
                     pc <= pc + 4;
                     end
                 6'b1?_?011: begin // MOV rd, [ra + imm16]
-                    $display("cpu: mov(16) [r%d+%h],r%d,sz=%b", opreg1, { 8'h0, imm16 }, opreg2, inst_lo[4:3]);
+                    $display("cpu: mov(16)(R) [r%d+%h],r%d,sz=%b", opreg1, { 8'h0, imm16 }, opreg2, inst_lo[4:3]);
                     trans_size <= inst_lo[4:3]; // Check OP_G1_MV_BITMASK
                     read_regno <= opreg1;
                     rw_addr <= regs[opreg2] + { 16'h0, imm16 };
@@ -383,7 +367,7 @@ module limn2600_CPU(
                     pc <= pc + 4;
                     end
                 6'b??_?010: begin // MOV [ra + imm16], rd
-                    $display("cpu: mov(5) [r%d+%h],[%d],sz=%b", opreg1, { 8'h0, imm16 }, imm5, inst_lo[4:3]);
+                    $display("cpu: mov(5)(W) [r%d+%h],[%d],sz=%b", opreg1, { 8'h0, imm16 }, imm5, inst_lo[4:3]);
                     trans_size <= inst_lo[4:3]; // Check OP_G1_MV_BITMASK
                     if(inst_lo[5] == 0) begin // Write immediate
                         write_value <= { 27'h0, imm5 };
@@ -407,35 +391,31 @@ module limn2600_CPU(
                     endcase
 
                     casez(inst_hi[4:2])
-                        OP_ADD: begin
+                        3'b111: begin
                             $display("cpu: add");
                             regs[opreg1] <= regs[opreg2] + tmp32;
                             end
-                        OP_SUB: begin
+                        3'b110: begin
                             $display("cpu: sub");
                             regs[opreg1] <= regs[opreg2] - tmp32;
                             end
-                        OP_AND: begin
+                        3'b011: begin
                             $display("cpu: and");
                             regs[opreg1] <= regs[opreg2] & tmp32;
                             end
-                        OP_XOR: begin
+                        3'b010: begin
                             $display("cpu: xor");
                             regs[opreg1] <= regs[opreg2] ^ tmp32;
                             end
-                        OP_OR: begin
+                        3'b001: begin
                             $display("cpu: or");
                             regs[opreg1] <= regs[opreg2] | tmp32;
                             end
-                        OP_NOR: begin
-                            $display("cpu: nor");
-                            regs[opreg1] <= ~(regs[opreg2] | tmp32);
-                            end
-                        OP_SLT: begin
+                        3'b101: begin
                             $display("cpu: slt");
                             regs[opreg1] <= { 31'h0, regs[opreg2] < tmp32 };
                             end
-                        OP_SLTS: begin
+                        3'b100: begin
                             $display("cpu: slts");
                             // tmp32 is positive, register is negative
                             if((regs[opreg2] & 32'h80000000) != 0 && tmp32 & 32'h80000000 == 0) begin
@@ -447,6 +427,10 @@ module limn2600_CPU(
                                 regs[opreg1] <= { 31'h0, regs[opreg2] < tmp32 };
                             end
                             end
+                        OP_NOR: begin
+                            $display("cpu: nor");
+                            regs[opreg1] <= ~(regs[opreg2] | tmp32);
+                            end
                         default: begin end
                     endcase
 
@@ -454,7 +438,7 @@ module limn2600_CPU(
                     if(inst_hi[5] == 1 && (inst_hi[4:2] & 3'b111) != 0) begin
                         casez(inst_hi[5:2])
                             OP_G1_MOV_FR: begin // Move-From-Registers
-                                $display("cpu: mov [r%d+r%d+%d],r%d,sz=%b", opreg2, opreg3, imm5, opreg1, inst_hi[3:2]);
+                                $display("cpu: mov(FR) [r%d+r%d+%d],r%d,sz=%b", opreg2, opreg3, imm5, opreg1, inst_hi[3:2]);
                                 trans_size <= inst_hi[3:2]; // Check OP_G1_MV_BITMASK
                                 write_value <= regs[opreg1];
                                 rw_addr <= regs[opreg2] + tmp32;
@@ -462,7 +446,7 @@ module limn2600_CPU(
                                 stall_fetch <= 1;
                                 end
                             OP_G1_MOV_TR: begin // Move-To-Register
-                                $display("cpu: mov r%d,[r%d+r%d+%d],sz=%b", opreg1, opreg2, opreg3, imm5, inst_hi[3:2]);
+                                $display("cpu: mov(TR) r%d,[r%d+r%d+%d],sz=%b", opreg1, opreg2, opreg3, imm5, inst_hi[3:2]);
                                 trans_size <= inst_hi[3:2]; // Check OP_G1_MV_BITMASK
                                 read_regno <= opreg1;
                                 rw_addr <= regs[opreg2] + tmp32;
@@ -519,6 +503,7 @@ module limn2600_CPU(
                         OP_G3_DIV: begin
                             if(opreg4 != 5'b0) begin
                                 // Raise UD
+                                $display("cpu: exception - invalid div inst=%b", execute_inst);
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
@@ -532,6 +517,7 @@ module limn2600_CPU(
                         OP_G3_DIVS: begin
                             if(opreg4 != 5'b0) begin
                                 // Raise UD
+                                $display("cpu: exception - invalid divs inst=%b", execute_inst);
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
@@ -550,6 +536,7 @@ module limn2600_CPU(
                         OP_G3_MOD: begin
                             if(opreg4 != 5'b0) begin
                                 // Raise UD
+                                $display("cpu: exception - invalid mod inst=%b", execute_inst);
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
@@ -563,6 +550,7 @@ module limn2600_CPU(
                         OP_G3_MUL: begin
                             if(opreg4 != 5'b0) begin
                                 // Raise UD
+                                $display("cpu: exception - invalid mul inst=%b", execute_inst);
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
@@ -600,8 +588,11 @@ module limn2600_CPU(
                 end
             endcase
         end else if(state == S_BRANCHED) begin
-            // This is used to update the fetch address after an exception or PC, meaning we have to stall
-            // so let's unstall fetcher
+            for(i = 0; i < 16; i++) begin // Reset fetching
+                fetch_inst_queue[i] <= OP_TRULY_NOP;
+            end
+            // This is used to update the fetch address after an exception or PC, meaning we had to stall
+            // so let's unstall the fetcher
             fetch_addr <= pc;
             stall_fetch <= 0;
         end
@@ -662,13 +653,25 @@ module limn2600_CPU(
                 // Appropriately apply masks
                 casez(trans_size)
                 OP_G1_MV_BYTE: begin // 1-bytes, 4-per-cell
-                    write_value <= data_in | ((write_value & 32'hFF) << ((rw_addr & 32'd3) << 32'd2));
+                    write_value <= (data_in & ~(32'hFF << ((rw_addr % 4) * 8))) | ((write_value & 32'hFF) << ((rw_addr % 4) * 8));
                     end
                 OP_G1_MV_INT: begin // 2-bytes, 2-per-cell
-                    write_value <= data_in | ((write_value & 32'hFFFF) << ((rw_addr & 32'd1) << 32'd4));
+                    write_value <= (data_in & ~(32'hFFFF << ((rw_addr % 4) * 8))) | ((write_value & 32'hFFFF) << ((rw_addr % 4) * 8));
                     end
                 OP_G1_MV_LONG: begin // 4-bytes, 1-per-cell
-                    write_value <= data_in | (write_value & 32'hFFFFFFFF);
+                    if((rw_addr & 32'd3) == 0) begin // Aligned access
+                        we <= 1;
+                        data_out <= write_value;
+                        state <= S_FETCH;
+                        stall_fetch <= 0;
+                    end else begin // Unaligned access
+                        $display("cpu: unaligned write of long!");
+                        ctl_regs[CREG_EBADADDR] <= pc;
+                        pc <= ctl_regs[CREG_EVEC];
+                        ctl_regs[CREG_RS][31:28] <= ECAUSE_UNALIGNED;
+                        stall_fetch <= 1;
+                        state <= S_BRANCHED;
+                    end
                     end
                 endcase
                 state <= S_WRITE;

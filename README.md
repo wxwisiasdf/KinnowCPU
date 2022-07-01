@@ -1,4 +1,4 @@
-![Title](https://raw.githubusercontent.com/wxwisiasdf/KinnowCPU/main/Logo.png)
+![Title](https://raw.githubusercontent.com/wxwisiasdf/KinnowCPU/main/logo.png)
 
 ![CI](https://github.com/wxwisiasdf/KinnowCPU/actions/workflows/auto.yaml/badge.svg?branch=main)
 
