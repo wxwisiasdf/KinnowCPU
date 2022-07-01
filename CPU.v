@@ -1,5 +1,70 @@
-`ifndef LIMN2600_EXECUTOR_H
-`define LIMN2600_EXECUTOR_H
+module limn2600_ALU(
+    input rst,
+    input clk,
+    input [2:0] op,
+    input [31:0] in0,
+    input [31:0] in1,
+    output reg [31:0] out
+);
+    // Arithmethic mode
+    parameter
+        OP_SLT = 3'b101,
+        OP_SLTS = 3'b100,
+        OP_ADD = 3'b111,
+        OP_SUB = 3'b110,
+        OP_AND = 3'b011,
+        OP_XOR = 3'b010,
+        OP_OR = 3'b001,
+        OP_NOR = 3'b000;
+
+    always @(posedge clk) begin
+        casez(op)
+            OP_ADD: begin
+                $display("cpu: add");
+                out <= in0 + in0;
+                end
+            OP_SUB: begin
+                $display("cpu: sub");
+                out <= in0 - in1;
+                end
+            OP_AND: begin
+                $display("cpu: and");
+                out <= in0 & in1;
+                end
+            OP_XOR: begin
+                $display("cpu: xor");
+                out <= in0 ^ in1;
+                end
+            OP_OR: begin
+                $display("cpu: or");
+                out <= in0 | in1;
+                end
+            OP_NOR: begin
+                $display("cpu: nor");
+                out <= ~(in0 | in1);
+                end
+            OP_SLT: begin
+                $display("cpu: slt");
+                out = { 31'h0, in0 < in1 };
+                end
+            OP_SLTS: begin
+                $display("cpu: slts");
+                // tmp32 is positive, register is negative
+                if((in0 & 32'h80000000) != 0 && in1 & 32'h80000000 == 0) begin
+                    out <= 1;
+                // tmp32 is negative, register is positive
+                end else if((in0& 32'h80000000) == 0 && in1 & 32'h80000000 != 0) begin
+                    out <= 0;
+                end else begin
+                    out = { 31'h0, in0 < in1 };
+                end
+                end
+            default: begin
+                out <= 0;
+                end
+        endcase
+    end
+endmodule
 
 ///////////////////////////////////////////////////////////////////////////////
 //
@@ -67,16 +132,19 @@ module limn2600_CPU(
         OP_BEQ = 6'b11_1101,
         OP_BNE = 6'b11_0101,
         OP_BLT = 6'b10_1101,
-        OP_ADDI = 6'b11_1100,
-        OP_SUBI = 6'b11_0100,
-        OP_SLTI = 6'b10_1100,
-        OP_SLTIS = 6'b10_0100,
-        OP_ANDI = 6'b01_1100,
-        OP_XORI = 6'b01_0100,
-        OP_ORI = 6'b00_1100,
         OP_LUI = 6'b00_0100,
         OP_MOV16 = 6'b1?_?010,
         OP_MOV5 = 6'b0?_?010; // Advanced arithmethic, atomics, etc
+    // Arithmethic mode
+    parameter
+        OP_SLT = 3'b101,
+        OP_SLTS = 3'b100,
+        OP_ADD = 3'b111,
+        OP_SUB = 3'b110,
+        OP_AND = 3'b011,
+        OP_XOR = 3'b010,
+        OP_OR = 3'b001,
+        OP_NOR = 3'b000;
     // Group 1
     // Move's length
     parameter
@@ -88,15 +156,7 @@ module limn2600_CPU(
     parameter
         OP_G1_MOV_TR = 4'b11??,
         OP_G1_MOV_FR = 4'b10??,
-        OP_G1_NOP = 4'b1000,
-        OP_G1_SLT = 4'b0101,
-        OP_G1_SLTS = 4'b0100,
-        OP_G1_ADD = 4'b0111,
-        OP_G1_SUB = 4'b0110,
-        OP_G1_AND = 4'b0011,
-        OP_G1_XOR = 4'b0010,
-        OP_G1_OR = 4'b0001,
-        OP_G1_NOR = 4'b0000;
+        OP_G1_NOP = 4'b1000;
     // Opcode modes
     parameter
         OPM_G1_LHS = 2'b00,
@@ -160,8 +220,8 @@ module limn2600_CPU(
         for(i = 0; i < 16; i++) begin
             fetch_inst_queue[i] <= OP_TRULY_NOP;
         end
-        fetch_inst_queue_num = 4'd14;
-        execute_inst_queue_num = 4'd15;
+        fetch_inst_queue_num <= 4'd14;
+        execute_inst_queue_num <= 4'd15;
         execute_inst <= OP_TRULY_NOP;
         stall_execute <= 0;
         stall_fetch <= 0;
@@ -171,7 +231,7 @@ module limn2600_CPU(
     always @(posedge irq) begin
         ctl_regs[CREG_EBADADDR] <= pc;
         pc <= ctl_regs[CREG_EVEC];
-        ctl_regs[CREG_RS][31:28] = ECAUSE_INTERRUPT;
+        ctl_regs[CREG_RS][31:28] <= ECAUSE_INTERRUPT;
         if(state == S_HALT) begin
             // Re-stall
             stall_fetch <= 1;
@@ -252,59 +312,65 @@ module limn2600_CPU(
                     end
                     end
                 // ADDI [rd], [rd], [imm16]
-                OP_ADDI: begin
-                    $display("cpu: addi r%d,r%d,[%h]", opreg1, opreg2, imm16);
-                    regs[opreg1] = regs[opreg2] + imm16;
-                    pc <= pc + 4;
-                    end
                 // SUBI [rd], [rd], [imm16]
-                OP_SUBI: begin
-                    $display("cpu: subi r%d,r%d,[%h]", opreg1, opreg2, imm16);
-                    regs[opreg1] = regs[opreg2] - imm16;
-                    pc <= pc + 4;
-                    end
                 // SLTI [rd], [rd], [imm16]
-                OP_SLTI: begin
-                    $display("cpu: slti r%d,r%d,[%h]", opreg1, opreg2, imm16);
-                    regs[opreg1] = { 31'h0, regs[opreg2] < imm16 };
-                    pc <= pc + 4;
-                    end
                 // SLTIS [rd], [rd], [imm16]
-                OP_SLTIS: begin
-                    $display("cpu: sltis r%d,r%d,[%h]", opreg1, opreg2, imm16);
-                    // imm16 is positive, register is negative
-                    if((regs[opreg2] & 32'h80000000) != 0 && imm16 & 32'h80000000 == 0) begin
-                        regs[opreg1] <= 1;
-                    // imm16 is negative, register is positive
-                    end else if((regs[opreg2] & 32'h80000000) == 0 && imm16 & 32'h80000000 != 0) begin
-                        regs[opreg1] <= 0;
-                    end else begin
-                        regs[opreg1] = { 31'h0, regs[opreg2] < imm16 };
-                    end
-                    pc <= pc + 4;
-                    end
                 // ANDI [rd], [rd], [imm16]
-                OP_ANDI: begin
-                    $display("cpu: andi r%d,r%d,[%h]", opreg1, opreg2, imm16);
-                    regs[opreg1] = regs[opreg2] & imm16;
-                    pc <= pc + 4;
-                    end
                 // XORI [rd], [rd], [imm16]
-                OP_XORI: begin
-                    $display("cpu: xori r%d,r%d,[%h]", opreg1, opreg2, imm16);
-                    regs[opreg1] = regs[opreg2] ^ imm16;
-                    pc <= pc + 4;
-                    end
                 // ORI [rd], [rd], [imm16]
-                OP_ORI: begin
-                    $display("cpu: ori r%d,r%d,[%h]", opreg1, opreg2, imm16);
-                    regs[opreg1] = regs[opreg2] | imm16;
-                    pc <= pc + 4;
-                    end
                 // LUI [rd], [rd], [imm16]
-                OP_LUI: begin
-                    $display("cpu: lui r%d,r%d,[%h]", opreg1, opreg2, imm16);
-                    regs[opreg1] = regs[opreg2] | (imm16 << 16);
+                6'b??_?100: begin
+                    $display("cpu: imm_alu_inst");
+                    if(inst_lo[5:3] == 0) begin // LUI
+                        $display("cpu: lui r%d,r%d,[%h]", opreg1, opreg2, imm16);
+                        regs[opreg1] <= regs[opreg2] | ({ 16'b0, imm16 } << 16);
+                    end else begin // Rest of ops
+                        regs[opreg1] <= regs[opreg2] ^ { 16'b0, imm16 };
+                        casez(inst_lo[5:3])
+                            OP_ADD: begin
+                                $display("cpu: add");
+                                regs[opreg1] <= regs[opreg2] + { 16'b0, imm16 };
+                                end
+                            OP_SUB: begin
+                                $display("cpu: sub");
+                                regs[opreg1] <= regs[opreg2] - { 16'b0, imm16 };
+                                end
+                            OP_AND: begin
+                                $display("cpu: and");
+                                regs[opreg1] <= regs[opreg2] & { 16'b0, imm16 };
+                                end
+                            OP_XOR: begin
+                                $display("cpu: xor");
+                                regs[opreg1] <= regs[opreg2] ^ { 16'b0, imm16 };
+                                end
+                            OP_OR: begin
+                                $display("cpu: or");
+                                regs[opreg1] <= regs[opreg2] | { 16'b0, imm16 };
+                                end
+                            OP_SLT: begin
+                                $display("cpu: slt");
+                                regs[opreg1] <= { 31'h0, regs[opreg2] < { 16'b0, imm16 } };
+                                end
+                            OP_SLTS: begin
+                                $display("cpu: slts");
+                                // { 16'b0, imm16 } is positive, register is negative
+                                if((regs[opreg2] & 32'h80000000) != 0 && { 16'b0, imm16 } & 32'h80000000 == 0) begin
+                                    regs[opreg1] <= 1;
+                                // { 16'b0, imm16 } is negative, register is positive
+                                end else if((regs[opreg2] & 32'h80000000) == 0 && { 16'b0, imm16 } & 32'h80000000 != 0) begin
+                                    regs[opreg1] <= 0;
+                                end else begin
+                                    regs[opreg1] <= { 31'h0, regs[opreg2] < { 16'b0, imm16 } };
+                                end
+                                end
+                            default: begin
+                                $display("cpu: invalid imm_alu_inst,op=%b", inst_lo[5:3]);
+                                ctl_regs[CREG_EBADADDR] <= pc;
+                                pc <= ctl_regs[CREG_EVEC];
+                                ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
+                                end
+                        endcase
+                    end
                     pc <= pc + 4;
                     end
                 6'b1?_?011: begin // MOV rd, [ra + imm16]
@@ -340,41 +406,37 @@ module limn2600_CPU(
                         OPM_G1_ROR: tmp32 <= regs[opreg3] >>> { 26'h0, imm5};
                     endcase
 
-                    casez(inst_hi[5:2])
-                        OP_G1_NOP: begin
-                            $display("cpu: nop");
-                            regs[opreg1] <= tmp32;
-                            end
-                        OP_G1_ADD: begin
+                    casez(inst_hi[4:2])
+                        OP_ADD: begin
                             $display("cpu: add");
                             regs[opreg1] <= regs[opreg2] + tmp32;
                             end
-                        OP_G1_SUB: begin
+                        OP_SUB: begin
                             $display("cpu: sub");
                             regs[opreg1] <= regs[opreg2] - tmp32;
                             end
-                        OP_G1_AND: begin
+                        OP_AND: begin
                             $display("cpu: and");
                             regs[opreg1] <= regs[opreg2] & tmp32;
                             end
-                        OP_G1_XOR: begin
+                        OP_XOR: begin
                             $display("cpu: xor");
                             regs[opreg1] <= regs[opreg2] ^ tmp32;
                             end
-                        OP_G1_OR: begin
+                        OP_OR: begin
                             $display("cpu: or");
                             regs[opreg1] <= regs[opreg2] | tmp32;
                             end
-                        OP_G1_NOR: begin
+                        OP_NOR: begin
                             $display("cpu: nor");
                             regs[opreg1] <= ~(regs[opreg2] | tmp32);
                             end
-                        OP_G1_SLT: begin
-                            $display("cpu: slti");
-                            regs[opreg1] = { 31'h0, regs[opreg2] < tmp32 };
+                        OP_SLT: begin
+                            $display("cpu: slt");
+                            regs[opreg1] <= { 31'h0, regs[opreg2] < tmp32 };
                             end
-                        OP_G1_SLTS: begin
-                            $display("cpu: sltis");
+                        OP_SLTS: begin
+                            $display("cpu: slts");
                             // tmp32 is positive, register is negative
                             if((regs[opreg2] & 32'h80000000) != 0 && tmp32 & 32'h80000000 == 0) begin
                                 regs[opreg1] <= 1;
@@ -382,7 +444,7 @@ module limn2600_CPU(
                             end else if((regs[opreg2] & 32'h80000000) == 0 && tmp32 & 32'h80000000 != 0) begin
                                 regs[opreg1] <= 0;
                             end else begin
-                                regs[opreg1] = { 31'h0, regs[opreg2] < tmp32 };
+                                regs[opreg1] <= { 31'h0, regs[opreg2] < tmp32 };
                             end
                             end
                         default: begin end
@@ -438,7 +500,7 @@ module limn2600_CPU(
                         $display("cpu: invalid_grp2=0b%b", inst_hi[5:2]);
                         ctl_regs[CREG_EBADADDR] <= pc;
                         pc <= ctl_regs[CREG_EVEC];
-                        ctl_regs[CREG_RS][31:28] = ECAUSE_INVALID_INST;
+                        ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
                         end
                     endcase
                     end
@@ -450,7 +512,7 @@ module limn2600_CPU(
                             // TODO: Is imm22 used at all?
                             ctl_regs[CREG_EBADADDR] <= pc;
                             pc <= ctl_regs[CREG_EVEC];
-                            ctl_regs[CREG_RS][31:28] = ECAUSE_BREAKPOINT;
+                            ctl_regs[CREG_RS][31:28] <= ECAUSE_BREAKPOINT;
                             stall_fetch <= 1;
                             state <= S_BRANCHED;
                             end
@@ -463,7 +525,7 @@ module limn2600_CPU(
                                 stall_fetch <= 1;
                                 state <= S_BRANCHED;
                             end else begin
-                                regs[opreg1] = regs[opreg2] / regs[opreg3];
+                                regs[opreg1] <= regs[opreg2] / regs[opreg3];
                                 pc <= pc + 4;
                             end
                             end
@@ -477,7 +539,7 @@ module limn2600_CPU(
                                 state <= S_BRANCHED;
                             end else begin
                                 // TODO: Properly perform signed division
-                                regs[opreg1] = { (regs[opreg2][31] | regs[opreg3][31]), (regs[opreg2] / regs[opreg3]) };
+                                regs[opreg1] <= { (regs[opreg2][31] | regs[opreg3][31]), (regs[opreg2] / regs[opreg3]) };
                                 pc <= pc + 4;
                             end
                             end
@@ -494,7 +556,7 @@ module limn2600_CPU(
                                 stall_fetch <= 1;
                                 state <= S_BRANCHED;
                             end else begin
-                                regs[opreg1] = regs[opreg2] % regs[opreg3];
+                                regs[opreg1] <= regs[opreg2] % regs[opreg3];
                                 pc <= pc + 4;
                             end
                             end
@@ -507,7 +569,7 @@ module limn2600_CPU(
                                 stall_fetch <= 1;
                                 state <= S_BRANCHED;
                             end else begin
-                                regs[opreg1] = regs[opreg2] * regs[opreg3];
+                                regs[opreg1] <= regs[opreg2] * regs[opreg3];
                                 pc <= pc + 4;
                             end
                             end
@@ -632,5 +694,3 @@ module limn2600_CPU(
         end
     end
 endmodule
-
-`endif

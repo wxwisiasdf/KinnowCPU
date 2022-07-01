@@ -1,6 +1,3 @@
-`ifndef LIMN2600_SRAM_H
-`define LIMN2600_SRAM_H
-
 ///////////////////////////////////////////////////////////////////////////////
 //
 // Limn2600 DRAM (128K)
@@ -54,5 +51,3 @@ module limn2600_SRAM(
         rdy = 1'b0;
     end
 endmodule
-
-`endif

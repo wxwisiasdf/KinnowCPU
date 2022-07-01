@@ -45,9 +45,9 @@ module limn2600_System;
         clk = 1'b0;
         forever begin
             #0 $display("perf: Begin tick %8t", $time);
+            #0 clk = ~clk;
+            #1 $display("perf: End tick   %8t", $time);
             #1 clk = ~clk;
-            #2 $display("perf: End tick   %8t", $time);
-            #3 clk = ~clk;
         end
     end
 
