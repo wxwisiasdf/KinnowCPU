@@ -310,6 +310,14 @@ module limn2600_CPU(
                     if(inst_lo[5:3] == 0) begin // LUI
                         $display("cpu: lui r%d,r%d,[0x%h]", opreg1, opreg2, imm16);
                         regs[opreg1] <= regs[opreg2] | ({ 16'b0, imm16 } << 16);
+                        // lui often comes paired with an ori, we can fuse ops at this point!
+                        $display("next_probab_fuse=%b", fetch_inst_queue[execute_inst_queue_num]);
+                        if(fetch_inst_queue[execute_inst_queue_num][5:0] == 6'b00_1100) begin
+                            $display("cpu: or (fused)");
+                            regs[fetch_inst_queue[execute_inst_queue_num][10:6]] <= regs[fetch_inst_queue[execute_inst_queue_num][15:11]] | { 16'b0, fetch_inst_queue[execute_inst_queue_num][31:16] };
+                            execute_inst_queue_num <= execute_inst_queue_num + 2;
+                            execute_inst <= fetch_inst_queue[execute_inst_queue_num + 1];
+                        end
                     end else begin // Rest of ops
                         regs[opreg1] <= regs[opreg2] ^ { 16'b0, imm16 };
                         casez(inst_lo[5:3])
