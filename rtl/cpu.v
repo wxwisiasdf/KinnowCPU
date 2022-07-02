@@ -6,9 +6,6 @@ module limn2600_ALU(
     input [31:0] in1,
     output reg [31:0] out
 );
-    // Arithmethic mode
-    parameter OP_NOR = 3'b000;
-
     always @(posedge clk) begin
         casez(op)
             3'b111: begin
@@ -47,11 +44,7 @@ module limn2600_ALU(
                     out = { 31'h0, in0 < in1 };
                 end
                 end
-            OP_NOR: begin
-                $display("cpu: nor");
-                out <= ~(in0 | in1);
-                end
-            default: begin
+            3'b000: begin
                 out <= 0;
                 end
         endcase
@@ -77,19 +70,18 @@ module limn2600_CPU(
     output reg we, // Write-Enable (1 = we want to write, 0 = we want to read)
     output reg cs // Command-State (1 = memory commands active, 0 = memory commands ignored)
 );
+    // State
     reg [31:0] tmp32; // Temporal value
     reg [31:0] regs[0:32]; // Limnstation has 32 registers
     reg [31:0] ctl_regs[0:32];
     reg [31:0] pc; // Program counter
     reg [2:0] state;
 
+    // I/O machine
     reg [2:0] trans_size; // Memory transfer size
     reg [31:0] write_value; // Write value
     reg [4:0] read_regno; // Register to place the read of memory into
     reg [31:0] rw_addr; // Read-Write address
-
-    reg stall_execute;
-    reg stall_fetch;
 
     localparam S_FETCH = 0;
     localparam S_EXECUTE = 1;
@@ -99,18 +91,28 @@ module limn2600_CPU(
     localparam S_HALT = 5;
     localparam S_BRANCHED = 6;
     
-    // Instruction decoder
+    // Instruction fetcher
+    reg stall_fetch;
     reg [31:0] fetch_inst_queue[0:16]; // Instruction fetched
     reg [31:0] fetch_addr; // Address to fetch on, reset on JAL/J/BR
     reg [3:0] fetch_inst_queue_num;
-    reg [3:0] execute_inst_queue_num;
 
+    // Branch prediction (fetcher stage)
+    reg [3:0] regs_predict[0:32]; // Flags for the BP to tag registers
+    parameter
+        RP_NON_ZERO = 4'b0001, // Register is non-zero
+        RP_ZERO = 4'b0000, // Register might be zero
+        RP_UNSPEC_MEM = 4'b0010; // Register depends on memory value
+
+    // Instruction executor
+    reg stall_execute;
+    reg [3:0] execute_inst_queue_num;
     reg [31:0] execute_inst; // Instruction to execute
     wire [28:0] imm29 = execute_inst[31:3];
     wire [22:0] imm21 = execute_inst[31:9];
     wire [23:0] imm22 = execute_inst[25:6]; // BRK and SYS
     wire [4:0] imm5 = execute_inst[31:27];
-    wire [15:0] imm16 = execute_inst[31:24];
+    wire [15:0] imm16 = execute_inst[31:16];
     wire [5:0] inst_lo = execute_inst[5:0];
     wire [4:0] opreg1 = execute_inst[10:6];
     wire [4:0] opreg2 = execute_inst[15:11];
@@ -234,7 +236,7 @@ module limn2600_CPU(
     // Execution thread
     always @(posedge clk) begin
         if(!stall_execute) begin
-            $display("cpu: Execution,num=%d", execute_inst_queue_num);
+            $display("cpu: Execution,num=%d,inst=%b<0x%h>", execute_inst_queue_num, execute_inst, execute_inst);
             execute_inst <= fetch_inst_queue[execute_inst_queue_num];
             execute_inst_queue_num <= execute_inst_queue_num + 1;
             state <= S_FETCH;
@@ -304,9 +306,9 @@ module limn2600_CPU(
                 // ORI [rd], [rd], [imm16]
                 // LUI [rd], [rd], [imm16]
                 6'b??_?100: begin
-                    $display("cpu: imm_alu_inst");
+                    $display("cpu: imm_alu_inst r%d,r%d,[0x%h]", opreg1, opreg2, imm16);
                     if(inst_lo[5:3] == 0) begin // LUI
-                        $display("cpu: lui r%d,r%d,[%h]", opreg1, opreg2, imm16);
+                        $display("cpu: lui r%d,r%d,[0x%h]", opreg1, opreg2, imm16);
                         regs[opreg1] <= regs[opreg2] | ({ 16'b0, imm16 } << 16);
                     end else begin // Rest of ops
                         regs[opreg1] <= regs[opreg2] ^ { 16'b0, imm16 };
@@ -603,23 +605,112 @@ module limn2600_CPU(
         cs <= 1;
         addr <= rw_addr;
         if(stall_fetch) begin
-            $display("cpu: STALLED FETCH!");
+            $display("cpu_fetch: STALLED FETCH!");
         end
 
         if(!stall_fetch) begin
-            $display("cpu: Fetching,num=%d", fetch_inst_queue_num);
+            $display("cpu_fetch: Fetching,num=%d", fetch_inst_queue_num);
             addr <= fetch_addr;
             we <= 0; // Read from memory
             // Once we can fetch instructions we save the state, but only if
             // we aren't overwriting something being used by the executor!
             if(rdy && (fetch_inst_queue_num + 1) != execute_inst_queue_num) begin
-                $display("cpu: Fetched inst=%b,fetch-num=%d,exec-num=%d", data_in, fetch_inst_queue_num, execute_inst_queue_num);
+                $display("cpu_fetch: Fetched inst=%b,fetch-num=%d,exec-num=%d", data_in, fetch_inst_queue_num, execute_inst_queue_num);
                 // We "clean-path" the element after the one we just placed
                 // this ensures there aren't any left-overs from fetching
                 fetch_inst_queue[fetch_inst_queue_num] <= data_in;
                 fetch_inst_queue[fetch_inst_queue_num + 1] <= OP_TRULY_NOP;
                 fetch_inst_queue_num <= fetch_inst_queue_num + 1;
                 fetch_addr <= fetch_addr + 4; // Advance to next op
+                $display("cpu_fetch: fetch_addr=0x%h", fetch_addr);
+                casez(inst_lo)
+                    // JALR [rd], [ra], [imm29]
+                    OP_JALR: begin end // TODO: Prediction for JALR
+                    // JAL [imm29]
+                    OP_J_OR_JAL: begin
+                        if(inst_lo[0] == 0) begin // JAL variant clobbers LR
+                            regs_predict[REG_LR] <= regs_predict[REG_LR] | RP_NON_ZERO;
+                        end
+                        fetch_addr <= (fetch_addr & 32'h80000000) | ({ 3'h0, imm29 } << 2);
+                        end
+                    // BEQ ra, [imm21]
+                    OP_BEQ: begin
+                        if((regs_predict[opreg1] & RP_NON_ZERO) == 0) begin
+                            fetch_addr <= fetch_addr + ({ 9'h0, imm21 } << 2);
+                        end
+                        end
+                    // BNE ra, [imm21]
+                    OP_BNE: begin
+                        if((regs_predict[opreg1] & RP_NON_ZERO) == 1) begin
+                            fetch_addr <= fetch_addr + ({ 9'h0, imm21 } << 2);
+                        end
+                        end
+                    // BLT ra, [imm21]
+                    OP_BLT: begin
+                        if((regs_predict[opreg1] & RP_ZERO) == 1) begin
+                            fetch_addr <= fetch_addr + ({ 9'h0, imm21 } << 2);
+                        end
+                        end
+                    // ADDI [rd], [rd], [imm16]
+                    // SUBI [rd], [rd], [imm16]
+                    // SLTI [rd], [rd], [imm16]
+                    // SLTIS [rd], [rd], [imm16]
+                    // ANDI [rd], [rd], [imm16]
+                    // XORI [rd], [rd], [imm16]
+                    // ORI [rd], [rd], [imm16]
+                    // LUI [rd], [rd], [imm16]
+                    6'b??_?100: begin
+                        if(imm16 != 16'b0) begin
+                            regs_predict[opreg1] <= RP_NON_ZERO;
+                        end else begin
+                            regs_predict[opreg1] <= regs_predict[opreg2] | regs_predict[opreg3];
+                        end
+                        end
+                    6'b1?_?011: begin // MOV rd, [ra + imm16]
+                        regs_predict[opreg1] <= regs_predict[opreg1] | RP_UNSPEC_MEM;
+                        end
+                    6'b??_?010: begin end // MOV [ra + imm16], rd
+                    // Instructions starting with 111001
+                    6'b11_1001: begin
+                        casez(inst_hi[4:2])
+                            3'b111: regs_predict[opreg1] <= regs_predict[opreg2] | regs_predict[opreg3];
+                            3'b110: regs_predict[opreg1] <= regs_predict[opreg2] | regs_predict[opreg3];
+                            3'b011: regs_predict[opreg1] <= regs_predict[opreg2] | regs_predict[opreg3];
+                            3'b010: regs_predict[opreg1] <= regs_predict[opreg2] | regs_predict[opreg3];
+                            3'b001: regs_predict[opreg1] <= regs_predict[opreg2] | regs_predict[opreg3];
+                            3'b101: regs_predict[opreg1] <= regs_predict[opreg2] | regs_predict[opreg3];
+                            3'b100: regs_predict[opreg1] <= regs_predict[opreg2] | regs_predict[opreg3];
+                            default: begin end
+                        endcase
+                        // These high 1 bit is indicative of a MOV, the following 3 bytes MUST have atleast one set
+                        if(inst_hi[5] == 1 && (inst_hi[4:2] & 3'b111) != 0 && inst_hi[5:2] == OP_G1_MOV_TR) begin
+                            regs_predict[opreg1] <= regs_predict[opreg1] | RP_UNSPEC_MEM;
+                        end
+                        end
+                    6'b10_1001: begin
+                        casez(inst_hi[5:2])
+                        OP_G2_MFCR: begin end
+                        OP_G2_MTCR: begin end
+                        OP_G2_CACHEI: begin end
+                        OP_G2_HLT: begin end
+                        default: fetch_addr <= ctl_regs[CREG_EVEC];
+                        endcase
+                        end
+                    6'b11_0001: begin
+                        casez(inst_hi[5:2])
+                            OP_G3_DIV: regs_predict[opreg1] <= regs_predict[opreg2] | regs_predict[opreg3];
+                            OP_G3_DIVS: regs_predict[opreg1] <= regs_predict[opreg2] | regs_predict[opreg3];
+                            OP_G3_MOD: regs_predict[opreg1] <= regs_predict[opreg2] | regs_predict[opreg3];
+                            OP_G3_MUL: regs_predict[opreg1] <= regs_predict[opreg2] | regs_predict[opreg3];
+                            OP_G3_BRK: fetch_addr <= ctl_regs[CREG_EVEC];
+                            OP_G3_SYS: fetch_addr <= ctl_regs[CREG_EVEC];
+                            default: fetch_addr <= ctl_regs[CREG_EVEC];
+                        endcase
+                        end
+                    default: begin
+                        // ...
+                        end
+                endcase
             end
         end else if(state == S_READ) begin
             $display("cpu: S_READ");
