@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 `include "rtl/cpu.v"
 `include "rtl/sram.v"
 
@@ -6,7 +8,6 @@
 // Limn2600 System
 //
 ///////////////////////////////////////////////////////////////////////////////
-`timescale 1ns / 1ps
 module limn2600_System;
     reg rst;
     reg clk;

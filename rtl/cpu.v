@@ -72,13 +72,13 @@ module limn2600_CPU(
 );
     // State
     reg [31:0] tmp32; // Temporal value
-    reg [31:0] regs[0:32]; // Limnstation has 32 registers
-    reg [31:0] ctl_regs[0:32];
+    reg [31:0] regs[0:31]; // Limnstation has 32 registers
+    reg [31:0] ctl_regs[0:31];
     reg [31:0] pc; // Program counter
     reg [2:0] state;
 
     // I/O machine
-    reg [2:0] trans_size; // Memory transfer size
+    reg [1:0] trans_size; // Memory transfer size
     reg [31:0] write_value; // Write value
     reg [4:0] read_regno; // Register to place the read of memory into
     reg [31:0] rw_addr; // Read-Write address
@@ -93,12 +93,12 @@ module limn2600_CPU(
     
     // Instruction fetcher
     reg stall_fetch;
-    reg [31:0] fetch_inst_queue[0:16]; // Instruction fetched
+    reg [31:0] fetch_inst_queue[0:15]; // Instruction fetched
     reg [31:0] fetch_addr; // Address to fetch on, reset on JAL/J/BR
     reg [3:0] fetch_inst_queue_num;
 
     // Branch prediction (fetcher stage)
-    reg [3:0] regs_predict[0:32]; // Flags for the BP to tag registers
+    reg [3:0] regs_predict[0:31]; // Flags for the BP to tag registers
     parameter
         RP_NON_ZERO = 4'b0001, // Register is non-zero
         RP_ZERO = 4'b0000, // Register might be zero
@@ -110,7 +110,7 @@ module limn2600_CPU(
     reg [31:0] execute_inst; // Instruction to execute
     wire [28:0] imm29 = execute_inst[31:3];
     wire [22:0] imm21 = execute_inst[31:9];
-    wire [23:0] imm22 = execute_inst[25:6]; // BRK and SYS
+    wire [21:0] imm22 = execute_inst[27:6]; // BRK and SYS
     wire [4:0] imm5 = execute_inst[31:27];
     wire [15:0] imm16 = execute_inst[31:16];
     wire [5:0] inst_lo = execute_inst[5:0];
@@ -202,7 +202,7 @@ module limn2600_CPU(
 
     always @(rst) begin
         pc <= 32'hFFFE0000;
-        state <= S_FETCH;
+        state <= S_EXECUTE;
         for(i = 0; i < 16; i++) begin
             fetch_inst_queue[i] <= OP_TRULY_NOP;
         end
@@ -239,8 +239,7 @@ module limn2600_CPU(
             $display("cpu: Execution,num=%d,inst=%b<0x%h>", execute_inst_queue_num, execute_inst, execute_inst);
             execute_inst <= fetch_inst_queue[execute_inst_queue_num];
             execute_inst_queue_num <= execute_inst_queue_num + 1;
-            state <= S_FETCH;
-            stall_fetch <= 0;
+            state <= S_EXECUTE;
             casez(inst_lo)
                 // This is an invalid opcode, but used internally as a "true no-op", no PC is modified
                 // no anything is modified, good for continuing the executor without stanling
@@ -251,7 +250,7 @@ module limn2600_CPU(
                 OP_JALR: begin
                     $display("cpu: jalr r%d,r%d,[%h]", opreg1, opreg2, { 8'h0, imm16 } << 2);
                     regs[opreg1] <= pc + 4;
-                    pc <= regs[opreg2] + ({ 8'h0, imm16 } << 2); // TODO: Sign extend
+                    pc <= regs[opreg2] + ({ 16'h0, imm16 } << 2); // TODO: Sign extend
                     stall_fetch <= 1;
                     state <= S_BRANCHED;
                     end
@@ -313,11 +312,15 @@ module limn2600_CPU(
                         regs[opreg1] <= regs[opreg2] | ({ 16'b0, imm16 } << 16);
                         // lui often comes paired with an ori, we can fuse ops at this point!
                         $display("next_probab_fuse=%b", fetch_inst_queue[execute_inst_queue_num]);
+                        // TODO: More dynamic fuse
                         if(fetch_inst_queue[execute_inst_queue_num][5:0] == 6'b00_1100) begin
-                            $display("cpu: or (fused)");
-                            regs[fetch_inst_queue[execute_inst_queue_num][10:6]] <= regs[fetch_inst_queue[execute_inst_queue_num][15:11]] | { 16'b0, fetch_inst_queue[execute_inst_queue_num][31:16] };
-                            execute_inst_queue_num <= execute_inst_queue_num + 2;
-                            execute_inst <= fetch_inst_queue[execute_inst_queue_num + 1];
+                            if(fetch_inst_queue[execute_inst_queue_num][10:6] == opreg1 && opreg2 == 0) begin
+                                $display("cpu: or (fused)");
+                                regs[fetch_inst_queue[execute_inst_queue_num][10:6]] <= regs[opreg2] | (regs[fetch_inst_queue[execute_inst_queue_num][15:11]] | { imm16, fetch_inst_queue[execute_inst_queue_num][31:16] });
+                                execute_inst <= fetch_inst_queue[execute_inst_queue_num + 1];
+                                execute_inst_queue_num <= execute_inst_queue_num + 2;
+                                pc <= pc + 8;
+                            end
                         end
                     end else begin // Rest of ops
                         regs[opreg1] <= regs[opreg2] ^ { 16'b0, imm16 };
@@ -349,10 +352,10 @@ module limn2600_CPU(
                             3'b100: begin
                                 $display("cpu: slts");
                                 // { 16'b0, imm16 } is positive, register is negative
-                                if((regs[opreg2] & 32'h80000000) != 0 && { 16'b0, imm16 } & 32'h80000000 == 0) begin
+                                if((regs[opreg2] & 32'h80000000) != 0 && ({ 16'b0, imm16 } & 32'h80000000) == 0) begin
                                     regs[opreg1] <= 1;
                                 // { 16'b0, imm16 } is negative, register is positive
-                                end else if((regs[opreg2] & 32'h80000000) == 0 && { 16'b0, imm16 } & 32'h80000000 != 0) begin
+                                end else if((regs[opreg2] & 32'h80000000) == 0 && ({ 16'b0, imm16 } & 32'h80000000) != 0) begin
                                     regs[opreg1] <= 0;
                                 end else begin
                                     regs[opreg1] <= { 31'h0, regs[opreg2] < { 16'b0, imm16 } };
@@ -429,10 +432,10 @@ module limn2600_CPU(
                         3'b100: begin
                             $display("cpu: slts");
                             // tmp32 is positive, register is negative
-                            if((regs[opreg2] & 32'h80000000) != 0 && tmp32 & 32'h80000000 == 0) begin
+                            if((regs[opreg2] & 32'h80000000) != 0 && (tmp32 & 32'h80000000) == 0) begin
                                 regs[opreg1] <= 1;
                             // tmp32 is negative, register is positive
-                            end else if((regs[opreg2] & 32'h80000000) == 0 && tmp32 & 32'h80000000 != 0) begin
+                            end else if((regs[opreg2] & 32'h80000000) == 0 && (tmp32 & 32'h80000000) != 0) begin
                                 regs[opreg1] <= 0;
                             end else begin
                                 regs[opreg1] <= { 31'h0, regs[opreg2] < tmp32 };
@@ -536,7 +539,7 @@ module limn2600_CPU(
                                 state <= S_BRANCHED;
                             end else begin
                                 // TODO: Properly perform signed division
-                                regs[opreg1] <= { (regs[opreg2][31] | regs[opreg3][31]), (regs[opreg2] / regs[opreg3]) };
+                                regs[opreg1] <= { (regs[opreg2][31] | regs[opreg3][31]), regs[opreg2][30:0] / regs[opreg3][30:0] };
                                 pc <= pc + 4;
                             end
                             end
@@ -692,7 +695,7 @@ module limn2600_CPU(
                             default: begin end
                         endcase
                         // These high 1 bit is indicative of a MOV, the following 3 bytes MUST have atleast one set
-                        if(inst_hi[5] == 1 && (inst_hi[4:2] & 3'b111) != 0 && inst_hi[5:2] == OP_G1_MOV_TR) begin
+                        if(inst_hi[5] == 1 && (inst_hi[4:2] & 3'b111) != 0 && (inst_hi[5:2] & 4'b1100) == 4'b1100) begin
                             regs_predict[opreg1] <= regs_predict[opreg1] | RP_UNSPEC_MEM;
                         end
                         end
@@ -737,7 +740,7 @@ module limn2600_CPU(
                     regs[read_regno] <= (data_in & 32'hFFFFFFFF);
                     end
                 endcase
-                state <= S_FETCH;
+                state <= S_EXECUTE;
                 stall_fetch <= 0;
             end
         // Fetch the element from SRAM with 32-bits per unit of data
@@ -762,7 +765,7 @@ module limn2600_CPU(
                     if((rw_addr & 32'd3) == 0) begin // Aligned access
                         we <= 1;
                         data_out <= write_value;
-                        state <= S_FETCH;
+                        state <= S_EXECUTE;
                         stall_fetch <= 0;
                     end else begin // Unaligned access
                         $display("cpu: unaligned write of long!");
@@ -784,7 +787,7 @@ module limn2600_CPU(
             data_out <= write_value;
             if(rdy) begin
                 $display("cpu: data_out=0x%h,write_value=0x%h,addr=0x%h", data_out, write_value, addr);
-                state <= S_FETCH;
+                state <= S_EXECUTE;
                 stall_fetch <= 0;
             end
         end
