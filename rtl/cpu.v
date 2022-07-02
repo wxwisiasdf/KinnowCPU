@@ -240,6 +240,7 @@ module limn2600_CPU(
             execute_inst <= fetch_inst_queue[execute_inst_queue_num];
             execute_inst_queue_num <= execute_inst_queue_num + 1;
             state <= S_FETCH;
+            stall_fetch <= 0;
             casez(inst_lo)
                 // This is an invalid opcode, but used internally as a "true no-op", no PC is modified
                 // no anything is modified, good for continuing the executor without stanling
