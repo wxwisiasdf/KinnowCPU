@@ -140,12 +140,12 @@ module limn2600_Core(
     
     // Instruction fetcher
     reg stall_fetch;
-    reg [31:0] fetch_inst_queue[0:512]; // Instruction fetched
-    reg [31:0] fetch_addr_queue[0:512]; // ^ Address of
+    reg [31:0] fetch_inst_queue[0:32]; // Instruction fetched
+    reg [31:0] fetch_addr_queue[0:32]; // ^ Address of
     reg [31:0] fetch_addr; // Address to fetch on, reset on JAL/J/BR
     reg [31:0] execute_inst; // Instruction to execute
-    reg [8:0] fetch_inst_queue_num;
-    reg [8:0] execute_inst_queue_num;
+    reg [4:0] fetch_inst_queue_num;
+    reg [4:0] execute_inst_queue_num;
 
     // Branch prediction (fetcher stage)
     reg [3:0] regs_predict[0:31]; // Flags for the BP to tag registers
