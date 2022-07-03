@@ -59,7 +59,7 @@ module limn2600_System;
         #0 rst = 1'b1;
         #1 rst = 1'b0;
 
-        #100000 rst = 1'b0;
+        #10000 rst = 1'b0;
         $finish;
     end
 endmodule

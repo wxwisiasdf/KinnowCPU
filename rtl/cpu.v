@@ -70,6 +70,53 @@ module limn2600_Core(
     output reg we, // Write-Enable (1 = we want to write, 0 = we want to read)
     output reg cs // Command-State (1 = memory commands active, 0 = memory commands ignored)
 );
+    // Perform an ALU op
+    function [31:0] alu_op_result(
+        input [2:0] op,
+        input [31:0] a,
+        input [31:0] b
+    );
+        casez(op)
+            3'b111: begin // ADD
+                $display("cpu: add");
+                alu_op_result = a + b;
+                end
+            3'b110: begin // SUB
+                $display("cpu: sub");
+                alu_op_result = a - b;
+                end
+            3'b011: begin // AND
+                $display("cpu: and");
+                alu_op_result = a & b;
+                end
+            3'b010: begin // XOR
+                $display("cpu: xor");
+                alu_op_result = a ^ b;
+                end
+            3'b001: begin // OR
+                $display("cpu: or");
+                alu_op_result = a | b;
+                end
+            3'b101: begin // SLT
+                $display("cpu: slt");
+                alu_op_result = { 31'h0, a < b };
+                end
+            3'b100: begin // SLTS
+                $display("cpu: slts");
+                // tmp32 is positive, register is negative
+                if((a & 32'h80000000) != 0 && (b & 32'h80000000) == 0) begin
+                    alu_op_result = 1;
+                // tmp32 is negative, register is positive
+                end else if((a & 32'h80000000) == 0 && (b & 32'h80000000) != 0) begin
+                    alu_op_result = 0;
+                end else begin
+                    alu_op_result = { 31'h0, a < b };
+                end
+                end
+            default: begin end
+        endcase
+    endfunction
+
     // State
     reg [31:0] tmp32; // Temporal value
     reg [31:0] regs[0:31]; // Limnstation has 32 registers
@@ -253,8 +300,10 @@ module limn2600_Core(
         if(!stall_execute) begin
             if(state == S_BRANCHED) begin
                 $display("cpu: S_BRANCHED");
-                if(fetch_addr_queue[execute_inst_queue_num] != pc) begin
-                    $display("cpu_branch_predict: Failed prediction (expected addr=0x%h, but pc=0x%h)", fetch_addr_queue[execute_inst_queue_num], pc);
+                // We have to decrement 1 the instruction number of the execution unit because it is automatically incremented by the
+                // parallel executor thread (see below)
+                if(fetch_addr_queue[execute_inst_queue_num - 1] != pc) begin
+                    $display("cpu_branch_predict: Failed prediction (expected addr=0x%h, but pc=0x%h)", fetch_addr_queue[execute_inst_queue_num - 1], pc);
                     for(i = 0; i < 512; i++) begin // Reset fetching
                         fetch_inst_queue[i] <= OP_TRULY_NOP;
                         fetch_addr_queue[i] <= 32'b0;
@@ -268,7 +317,7 @@ module limn2600_Core(
                     // so let's unstall the fetcher
                     fetch_addr <= pc;
                 end else begin
-                    $display("cpu_branch_predict: Success! prediction (expected addr=0x%h, but pc=0x%h)", fetch_addr_queue[execute_inst_queue_num], pc);
+                    $display("cpu_branch_predict: Success! prediction (expected addr=0x%h, but pc=0x%h)", fetch_addr_queue[execute_inst_queue_num - 1], pc);
                 end
                 state <= S_EXECUTE;
                 stall_fetch <= 0;
@@ -359,51 +408,7 @@ module limn2600_Core(
                             //    end
                             //end
                         end else begin // Rest of ops
-                            regs[opreg1] <= regs[opreg2] ^ { 16'b0, imm16 };
-                            casez(inst_lo[5:3])
-                                3'b111: begin
-                                    $display("cpu: add");
-                                    regs[opreg1] <= regs[opreg2] + { 16'b0, imm16 };
-                                    end
-                                3'b110: begin
-                                    $display("cpu: sub");
-                                    regs[opreg1] <= regs[opreg2] - { 16'b0, imm16 };
-                                    end
-                                3'b011: begin
-                                    $display("cpu: and");
-                                    regs[opreg1] <= regs[opreg2] & { 16'b0, imm16 };
-                                    end
-                                3'b010: begin
-                                    $display("cpu: xor");
-                                    regs[opreg1] <= regs[opreg2] ^ { 16'b0, imm16 };
-                                    end
-                                3'b001: begin
-                                    $display("cpu: or");
-                                    regs[opreg1] <= regs[opreg2] | { 16'b0, imm16 };
-                                    end
-                                3'b101: begin
-                                    $display("cpu: slt");
-                                    regs[opreg1] <= { 31'h0, regs[opreg2] < { 16'b0, imm16 } };
-                                    end
-                                3'b100: begin
-                                    $display("cpu: slts");
-                                    // { 16'b0, imm16 } is positive, register is negative
-                                    if((regs[opreg2] & 32'h80000000) != 0 && ({ 16'b0, imm16 } & 32'h80000000) == 0) begin
-                                        regs[opreg1] <= 1;
-                                    // { 16'b0, imm16 } is negative, register is positive
-                                    end else if((regs[opreg2] & 32'h80000000) == 0 && ({ 16'b0, imm16 } & 32'h80000000) != 0) begin
-                                        regs[opreg1] <= 0;
-                                    end else begin
-                                        regs[opreg1] <= { 31'h0, regs[opreg2] < { 16'b0, imm16 } };
-                                    end
-                                    end
-                                default: begin
-                                    $display("cpu: invalid imm_alu_inst,op=%b", inst_lo[5:3]);
-                                    ctl_regs[CREG_EBADADDR] <= pc;
-                                    pc <= ctl_regs[CREG_EVEC];
-                                    ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
-                                    end
-                            endcase
+                            regs[opreg1] <= alu_op_result(inst_lo[5:3], regs[opreg2], { 16'b0, imm16 });
                         end
                         pc <= pc + 4;
                         end
@@ -440,49 +445,12 @@ module limn2600_Core(
                             OPM_G1_ROR: tmp32 <= regs[opreg3] >>> { 26'h0, imm5};
                         endcase
 
-                        casez(inst_hi[4:2])
-                            3'b111: begin
-                                $display("cpu: add");
-                                regs[opreg1] <= regs[opreg2] + tmp32;
-                                end
-                            3'b110: begin
-                                $display("cpu: sub");
-                                regs[opreg1] <= regs[opreg2] - tmp32;
-                                end
-                            3'b011: begin
-                                $display("cpu: and");
-                                regs[opreg1] <= regs[opreg2] & tmp32;
-                                end
-                            3'b010: begin
-                                $display("cpu: xor");
-                                regs[opreg1] <= regs[opreg2] ^ tmp32;
-                                end
-                            3'b001: begin
-                                $display("cpu: or");
-                                regs[opreg1] <= regs[opreg2] | tmp32;
-                                end
-                            3'b101: begin
-                                $display("cpu: slt");
-                                regs[opreg1] <= { 31'h0, regs[opreg2] < tmp32 };
-                                end
-                            3'b100: begin
-                                $display("cpu: slts");
-                                // tmp32 is positive, register is negative
-                                if((regs[opreg2] & 32'h80000000) != 0 && (tmp32 & 32'h80000000) == 0) begin
-                                    regs[opreg1] <= 1;
-                                // tmp32 is negative, register is positive
-                                end else if((regs[opreg2] & 32'h80000000) == 0 && (tmp32 & 32'h80000000) != 0) begin
-                                    regs[opreg1] <= 0;
-                                end else begin
-                                    regs[opreg1] <= { 31'h0, regs[opreg2] < tmp32 };
-                                end
-                                end
-                            OP_NOR: begin
-                                $display("cpu: nor");
-                                regs[opreg1] <= ~(regs[opreg2] | tmp32);
-                                end
-                            default: begin end
-                        endcase
+                        if(inst_hi[4:2] == OP_NOR) begin
+                            $display("cpu: nor");
+                            regs[opreg1] <= ~(regs[opreg2] | tmp32);
+                        end else begin
+                            regs[opreg1] <= alu_op_result(inst_hi[4:2], regs[opreg2], tmp32);
+                        end
 
                         // These high 1 bit is indicative of a MOV, the following 3 bytes MUST have atleast one set
                         if(inst_hi[5] == 1 && (inst_hi[4:2] & 3'b111) != 0) begin
