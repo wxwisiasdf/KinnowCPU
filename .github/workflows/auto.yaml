@@ -8,7 +8,7 @@ jobs:
     - uses: actions/checkout@v2
     - name: "Install"
       run: |
-        sudo apt install verilator iverilog
+        sudo apt install verilator libsdl2-dev
     - name: "Build"
       run: |
         sh build.sh
