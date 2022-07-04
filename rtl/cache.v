@@ -6,7 +6,7 @@
 module limn2600_cache
 #( // Parameter
     parameter DATA_WIDTH = 32,
-    parameter NUM_ENTRIES = 1024
+    parameter NUM_ENTRIES = 1023
 )
 ( // Interface
     input rst,
@@ -42,9 +42,9 @@ module limn2600_cache
     always @(posedge clk) begin
         $display("cache: k_out=0x%h,v_out=0x%h,k_in=0x%h,v_in=0x%h,we=%b,k_out_hash=0x%h,k_in_hash=0x%h", addr_out, data_out, addr_in, data_in, we, hash_result(addr_out), hash_result(addr_in));
         if(we) begin
-            inst_cache[hash_result(addr_in) % (NUM_ENTRIES - 1)] <= data_in;
+            inst_cache[hash_result(addr_in) % NUM_ENTRIES] <= data_in;
         end
-        data_out <= inst_cache[hash_result(addr_out) % (NUM_ENTRIES - 1)];
+        data_out <= inst_cache[hash_result(addr_out) % NUM_ENTRIES];
     end
 
     initial begin

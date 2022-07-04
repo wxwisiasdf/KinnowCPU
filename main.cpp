@@ -1,10 +1,17 @@
+// STL
 #include <cstdio>
 #include <memory>
 #include <stdexcept>
 #include <exception>
-#include <SDL2/SDL.h>
+
+// Verilator
 #include <verilated.h>
 
+// SDL
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_ttf.h>
+
+// Project
 #include "Vlimn2600_System.h"
 
 #define SCREEN_WIDTH 640

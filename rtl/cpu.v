@@ -62,7 +62,7 @@ endmodule
 ///////////////////////////////////////////////////////////////////////////////
 module limn2600_Core
 #( // Parameter
-    parameter INSN_QUEUE_SIZE = 16
+    parameter INSN_QUEUE_SIZE = 15
 )
 ( // Interface
     input rst,
@@ -145,12 +145,11 @@ module limn2600_Core
     
     // Instruction fetcher
     reg stall_fetch;
-    reg [31:0] fetch_inst_queue[0:INSN_QUEUE_SIZE]; // Instruction fetched
-    reg [31:0] fetch_addr_queue[0:INSN_QUEUE_SIZE]; // ^ Address of
+    reg fetch_addr_queue[0:INSN_QUEUE_SIZE]; // Whetever this instruction takes a branch
     reg [31:0] fetch_addr; // Address to fetch on, reset on JAL/J/BR
     wire [31:0] execute_inst = icache_data_out; // Instruction to execute
-    reg [4:0] fetch_inst_queue_num;
-    reg [4:0] execute_inst_queue_num;
+    reg [3:0] fetch_inst_queue_num;
+    reg [3:0] execute_inst_queue_num;
 
     // Branch prediction (fetcher stage)
     reg [3:0] regs_predict[0:31]; // Flags for the BP to tag registers
@@ -284,7 +283,6 @@ module limn2600_Core
         if(rst) begin
             $display("cpu: Reset");
             for(i = 0; i < INSN_QUEUE_SIZE; i++) begin
-                fetch_inst_queue[i] = OP_TRULY_NOP;
                 fetch_addr_queue[i] = 0;
             end
             pc <= 32'hFFFE0000;
@@ -395,28 +393,23 @@ module limn2600_Core
             icache_addr_in <= fetch_addr;
             // Once we can fetch instructions we save the state, but only if
             // we aren't overwriting something being used by the executor!
-            if(rdy && (fetch_inst_queue_num + 1) != execute_inst_queue_num) begin
+            if(rdy) begin
                 $display("cpu_fetch: Fetched inst=%b,fetch-num=%d,exec-num=%d,fetch=0x%h", data_in, fetch_inst_queue_num, execute_inst_queue_num, fetch_addr);
-                // Send the fetched instruction onto the i-cache
-                icache_we <= 1;
-                // We "clean-path" the element after the one we just placed
-                // this ensures there aren't any left-overs from fetching
-                fetch_inst_queue[fetch_inst_queue_num] <= data_in;
-                fetch_addr_queue[fetch_inst_queue_num] <= fetch_addr;
-                fetch_inst_queue[fetch_inst_queue_num + 1] <= OP_TRULY_NOP;
-                fetch_addr_queue[fetch_inst_queue_num + 1] <= 32'b0;
+                icache_we <= 1; // Send the fetched instruction onto the i-cache
+                fetch_addr_queue[fetch_inst_queue_num] <= 0; // Normally we don't branch
                 fetch_inst_queue_num <= fetch_inst_queue_num + 1; // Increment instruction number
                 fetch_addr <= fetch_addr + 4; // Advance to next op
                 casez(f_inst_lo)
                     // JALR [rd], [ra], [imm29]
                     OP_JALR: begin end // TODO: Prediction for JALR
                     // JAL [imm29]
-                    OP_J_OR_JAL: begin
+                    OP_J_OR_JAL: begin // This one is good because it's guaranteed to branch
                         $display("cpu_branch_predict: jal [0x%h],lr=0x%h", { 3'h0, f_imm29 } << 2, fetch_addr + 4);
                         if(f_inst_lo[0] == 0) begin // JAL variant clobbers LR
                             regs_predict[REG_LR] <= regs_predict[REG_LR] | RP_NON_ZERO;
                         end
                         fetch_addr <= (fetch_addr & 32'h80000000) | ({ 3'h0, f_imm29 } << 2);
+                        fetch_addr_queue[fetch_inst_queue_num] <= 1;
                         end
                     // Branches's signs are checked, backwards branches are often used in loops
                     // BEQ ra, [imm21]
@@ -424,6 +417,7 @@ module limn2600_Core
                         if(f_imm21[20] == 1 || 1) begin
                             if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
                             else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
+                            fetch_addr_queue[fetch_inst_queue_num] <= 1;
                         end
                         end
                     // BNE ra, [imm21]
@@ -431,6 +425,7 @@ module limn2600_Core
                         if(f_imm21[20] == 1 || 1) begin
                             if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
                             else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
+                            fetch_addr_queue[fetch_inst_queue_num] <= 1;
                         end
                         end
                     // BLT ra, [imm21]
@@ -438,6 +433,7 @@ module limn2600_Core
                         if(f_imm21[20] == 1 || (regs_predict[f_opreg1] & RP_ZERO) == 1) begin
                             if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
                             else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
+                            fetch_addr_queue[fetch_inst_queue_num] <= 1;
                         end
                         end
                     // ADDI [rd], [rd], [imm16]
@@ -514,10 +510,9 @@ module limn2600_Core
                 $display("cpu: S_BRANCHED");
                 // We have to decrement 1 the instruction number of the execution unit because it is automatically incremented by the
                 // parallel executor thread (see below)
-                if(fetch_addr_queue[execute_inst_queue_num - 1] != pc) begin
-                    $display("cpu_branch_predict: Failed prediction (expected addr=0x%h, but pc=0x%h)", fetch_addr_queue[execute_inst_queue_num - 1], pc);
+                if(1) begin
+                    $display("cpu_branch_predict: Failed prediction pc=0x%h", pc);
                     for(i = 0; i < INSN_QUEUE_SIZE; i++) begin // Reset fetching
-                        fetch_inst_queue[i] = OP_TRULY_NOP;
                         fetch_addr_queue[i] = 0;
                     end
                     fetch_inst_queue_num <= 0;
@@ -528,12 +523,21 @@ module limn2600_Core
                     // so let's unstall the fetcher
                     fetch_addr <= pc;
                 end else begin
-                    $display("cpu_branch_predict: Success! prediction (expected addr=0x%h, but pc=0x%h)", fetch_addr_queue[execute_inst_queue_num - 1], pc);
+                    $display("cpu_branch_predict: Success! prediction pc=0x%h", pc);
                 end
                 state <= S_EXECUTE;
                 stall_fetch <= 0;
             end else begin
                 $display("cpu: Execution,num=%d,icache_data_out=0x%h,inst=0x%h,addr=0x%h,pc=0x%h", execute_inst_queue_num, icache_data_out, execute_inst, fetch_addr_queue[execute_inst_queue_num], pc);
+                for(i = 0; i < INSN_QUEUE_SIZE; i++) begin
+                    if(i[3:0] == fetch_inst_queue_num) begin
+                        $display("cpu: insn_queue #%2d addr=0x%h <-- FETCH", i, fetch_addr_queue[i]);
+                    end else if(i[3:0] == execute_inst_queue_num) begin
+                        $display("cpu: insn_queue #%2d addr=0x%h <-- EXECUTE", i, fetch_addr_queue[i]);
+                    end else begin
+                        $display("cpu: insn_queue #%2d addr=0x%h", i, fetch_addr_queue[i]);
+                    end
+                end
                 execute_inst_queue_num <= execute_inst_queue_num + 1;
                 casez(inst_lo)
                     // This is an invalid opcode, but used internally as a "true no-op", no PC is modified
@@ -546,8 +550,8 @@ module limn2600_Core
                         $display("cpu: jalr r%d,r%d,[%h]", opreg1, opreg2, { 8'h0, imm16 } << 2);
                         regs[opreg1] <= pc + 4;
                         pc <= regs[opreg2] + ({ 16'h0, imm16 } << 2); // TODO: Sign extend
-                        stall_fetch <= 1;
-                        state <= S_BRANCHED;
+                        // No need to stall or inform of a branch, since we can accurately
+                        // predict that this jump will ALWAYS happen
                         end
                     // JAL [imm29]
                     OP_J_OR_JAL: begin
@@ -608,18 +612,7 @@ module limn2600_Core
                         if(inst_lo[5:3] == 0) begin // LUI
                             $display("cpu: lui r%d,r%d,[0x%h]", opreg1, opreg2, imm16);
                             regs[opreg1] <= regs[opreg2] | ({ 16'b0, imm16 } << 16);
-                            // lui often comes paired with an ori, we can fuse ops at this point!
-                            $display("next_probab_fuse=%b", fetch_inst_queue[execute_inst_queue_num]);
-                            // TODO: More dynamic fuse
-                            //if(fetch_inst_queue[execute_inst_queue_num][5:0] == 6'b00_1100) begin
-                            //    if(fetch_inst_queue[execute_inst_queue_num][10:6] == opreg1 && opreg2 == 0) begin
-                            //        $display("cpu: or (fused)");
-                            //        regs[fetch_inst_queue[execute_inst_queue_num][10:6]] <= regs[opreg2] | (regs[fetch_inst_queue[execute_inst_queue_num][15:11]] | { imm16, fetch_inst_queue[execute_inst_queue_num][31:16] });
-                            //        execute_inst <= fetch_inst_queue[execute_inst_queue_num + 1];
-                            //        execute_inst_queue_num <= execute_inst_queue_num + 2;
-                            //        pc <= pc + 8;
-                            //    end
-                            //end
+                            // TODO: Fuse OPS for example LA comes as LUI+ORI
                         end else begin // Rest of ops
                             regs[opreg1] <= alu_op_result(inst_lo[5:3], regs[opreg2], { 16'b0, imm16 });
                         end
