@@ -45,9 +45,10 @@ int main(int argc, char **argv, char **env)
     bool run = true;
     while (!Verilated::gotFinish() && run)
     {
-        main_time++;
-        top->clk = !top->clk;
+        printf("perf: Begin tick #%llu\n", main_time);
         top->rst = (main_time < 10) ? 1 : 0;
+        top->clk = !top->clk;
+        main_time++;
 #if VM_COVERAGE
         if (main_time < 5)
         {
@@ -108,6 +109,7 @@ int main(int argc, char **argv, char **env)
         }
 
         SDL_RenderPresent(renderer);
+        printf("perf: End tick\n");
     }
     top->final();
 

@@ -269,7 +269,6 @@ module limn2600_Core
     reg icache_we;
     reg [31:0] icache_addr_in;
     reg [31:0] icache_addr_out;
-    reg [31:0] icache_data_in;
     wire [31:0] icache_data_out;
     limn2600_cache icache(
         .rst(rst),
@@ -277,12 +276,13 @@ module limn2600_Core
         .we(icache_we),
         .addr_in(icache_addr_in),
         .addr_out(icache_addr_out),
-        .data_in(icache_data_in),
+        .data_in(data_in),
         .data_out(icache_data_out)
     );
 
     always @(posedge clk) begin
         if(rst) begin
+            $display("cpu: Reset");
             for(i = 0; i < INSN_QUEUE_SIZE; i++) begin
                 fetch_inst_queue[i] = OP_TRULY_NOP;
                 fetch_addr_queue[i] = 0;
@@ -306,7 +306,6 @@ module limn2600_Core
         end
         regs[0] <= 0;
         regs_predict[0] <= 0;
-        write_value <= 0;
     end
 
     // Fetch
@@ -393,14 +392,13 @@ module limn2600_Core
             addr <= fetch_addr;
             we <= 0; // Read from memory
             icache_we <= 0;
+            icache_addr_in <= fetch_addr;
             // Once we can fetch instructions we save the state, but only if
             // we aren't overwriting something being used by the executor!
             if(rdy && (fetch_inst_queue_num + 1) != execute_inst_queue_num) begin
                 $display("cpu_fetch: Fetched inst=%b,fetch-num=%d,exec-num=%d,fetch=0x%h", data_in, fetch_inst_queue_num, execute_inst_queue_num, fetch_addr);
                 // Send the fetched instruction onto the i-cache
                 icache_we <= 1;
-                icache_data_in <= data_in;
-                icache_addr_in <= fetch_addr;
                 // We "clean-path" the element after the one we just placed
                 // this ensures there aren't any left-overs from fetching
                 fetch_inst_queue[fetch_inst_queue_num] <= data_in;
@@ -518,7 +516,7 @@ module limn2600_Core
                 // parallel executor thread (see below)
                 if(fetch_addr_queue[execute_inst_queue_num - 1] != pc) begin
                     $display("cpu_branch_predict: Failed prediction (expected addr=0x%h, but pc=0x%h)", fetch_addr_queue[execute_inst_queue_num - 1], pc);
-                    for(i = 0; i < 512; i++) begin // Reset fetching
+                    for(i = 0; i < INSN_QUEUE_SIZE; i++) begin // Reset fetching
                         fetch_inst_queue[i] = OP_TRULY_NOP;
                         fetch_addr_queue[i] = 0;
                     end
