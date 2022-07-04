@@ -40,7 +40,7 @@ module limn2600_cache
     end
 
     always @(posedge clk) begin
-        $display("cache: k_out=0x%h,v_out=0x%h,k_in=0x%h,v_in=0x%h,we=%b,k_out_hash=0x%h,k_in_hash=0x%h", addr_out, data_out, addr_in, data_in, we, hash_result(addr_out), hash_result(addr_in));
+        $display("%m: k_out=0x%h,v_out=0x%h,k_in=0x%h,v_in=0x%h,we=%b,k_out_hash=0x%h,k_in_hash=0x%h", addr_out, data_out, addr_in, data_in, we, hash_result(addr_out), hash_result(addr_in));
         if(we) begin
             inst_cache[hash_result(addr_in) % NUM_ENTRIES] <= data_in;
         end
@@ -48,6 +48,6 @@ module limn2600_cache
     end
 
     initial begin
-        $display("cache: size=%0dKB,data_width=%0d bits", (NUM_ENTRIES / 1000) * (DATA_WIDTH / 8), DATA_WIDTH);
+        $display("%m: size=%0dKB,data_width=%0d bits", (NUM_ENTRIES / 1000) * (DATA_WIDTH / 8), DATA_WIDTH);
     end
 endmodule

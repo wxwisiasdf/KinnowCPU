@@ -1,13 +1,13 @@
 ///////////////////////////////////////////////////////////////////////////////
 //
-// Limn2600 DRAM (128K)
+// Limn2600 SRAM
 //
 ///////////////////////////////////////////////////////////////////////////////
 module limn2600_SRAM
 #( // Parameter
     parameter DATA_WIDTH = 32,
     parameter ROM_SIZE = 32767,
-    parameter RAM_SIZE = 8191
+    parameter RAM_SIZE = (32768 * 16) - 1
 )
 ( // Interface
     input rst,
@@ -28,22 +28,22 @@ module limn2600_SRAM
         if(cs) begin
             if(we) begin
                 if(addr == 32'hF8000040) begin
-                    $display("sram: serial_emul WRITE <%b>", data_in);
+                    $display("%m: serial_emul WRITE <%b>", data_in);
                 end else if(addr[31:16] == 16'h0000 || addr[31:16] == 16'h00F8) begin
-                    ram[addr[12:0] >> 2] <= data_in;
-                    $display("sram: ram_write data_in=0x%8h=>addr=0x%8h", data_in, addr);
+                    ram[addr[18:0] >> 2] <= data_in;
+                    $display("%m: ram_write data_in=0x%8h=>addr=0x%8h", data_in, addr);
                 end else begin
-                    $display("sram: rom_write [shadow] data_in=0x%8h=>addr=0x%8h", data_in, addr);
+                    $display("%m: rom_write [shadow] data_in=0x%8h=>addr=0x%8h", data_in, addr);
                 end
             end else begin
                 if(addr == 32'hF8000040) begin
-                    $display("sram: serial_emul READ <%b>", data_in);
+                    $display("%m: serial_emul READ <%b>", data_in);
                 end else if(addr[31:16] == 16'h0000 || addr[31:16] == 16'h00F8) begin
-                    data_out <= ram[addr[12:0] >> 2];
-                    $display("sram: ram_read data_out=0x%8h=>addr=0x%8h", data_out, addr);
+                    data_out <= ram[addr[18:0] >> 2];
+                    $display("%m: ram_read data_out=0x%8h=>addr=0x%8h", data_out, addr);
                 end else begin
                     data_out <= rom[addr[14:0] >> 2];
-                    $display("sram: rom_read [shadow] data_out=0x%8h=>addr=0x%8h", data_out, addr);
+                    $display("%m: rom_read [shadow] data_out=0x%8h=>addr=0x%8h", data_out, addr);
                 end
             end
             rdy <= 1;
@@ -54,8 +54,8 @@ module limn2600_SRAM
 
     // Initialize RAM with ROM
     initial begin
-        $display("sram: ram_size=%0dKB,data_width=%0d bits", ((DATA_WIDTH / 8) * RAM_SIZE) / 1000, DATA_WIDTH);
-        $display("sram: rom_size=%0dKB,data_width=%0d bits", ((DATA_WIDTH / 8) * ROM_SIZE) / 1000, DATA_WIDTH);
+        $display("%m: ram_size=%0dKB,data_width=%0d bits", ((DATA_WIDTH / 8) * RAM_SIZE) / 1000, DATA_WIDTH);
+        $display("%m: rom_size=%0dKB,data_width=%0d bits", ((DATA_WIDTH / 8) * ROM_SIZE) / 1000, DATA_WIDTH);
         $readmemh("../rom.txt", rom);
     end
 endmodule

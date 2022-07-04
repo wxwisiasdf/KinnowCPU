@@ -10,31 +10,31 @@ module limn2600_ALU
     always @(posedge clk) begin
         casez(op)
             3'b111: begin
-                $display("cpu: add");
+                $display("%m: add");
                 out <= in0 + in0;
                 end
             3'b110: begin
-                $display("cpu: sub");
+                $display("%m: sub");
                 out <= in0 - in1;
                 end
             3'b011: begin
-                $display("cpu: and");
+                $display("%m: and");
                 out <= in0 & in1;
                 end
             3'b010: begin
-                $display("cpu: xor");
+                $display("%m: xor");
                 out <= in0 ^ in1;
                 end
             3'b001: begin
-                $display("cpu: or");
+                $display("%m: or");
                 out <= in0 | in1;
                 end
             3'b101: begin
-                $display("cpu: slt");
+                $display("%m: slt");
                 out = { 31'h0, in0 < in1 };
                 end
             3'b100: begin
-                $display("cpu: slts");
+                $display("%m: slts");
                 // tmp32 is positive, register is negative
                 if((in0 & 32'h80000000) != 0 && in1 & 32'h80000000 == 0) begin
                     out <= 1;
@@ -83,31 +83,31 @@ module limn2600_Core
     );
         casez(op)
             3'b111: begin // ADD
-                $display("cpu: add");
+                $display("%m: add");
                 alu_op_result = a + b;
                 end
             3'b110: begin // SUB
-                $display("cpu: sub");
+                $display("%m: sub");
                 alu_op_result = a - b;
                 end
             3'b011: begin // AND
-                $display("cpu: and");
+                $display("%m: and");
                 alu_op_result = a & b;
                 end
             3'b010: begin // XOR
-                $display("cpu: xor");
+                $display("%m: xor");
                 alu_op_result = a ^ b;
                 end
             3'b001: begin // OR
-                $display("cpu: or");
+                $display("%m: or");
                 alu_op_result = a | b;
                 end
             3'b101: begin // SLT
-                $display("cpu: slt");
+                $display("%m: slt");
                 alu_op_result = { 31'h0, a < b };
                 end
             3'b100: begin // SLTS
-                $display("cpu: slts");
+                $display("%m: slts");
                 // tmp32 is positive, register is negative
                 if((a & 32'h80000000) != 0 && (b & 32'h80000000) == 0) begin
                     alu_op_result = 1;
@@ -281,7 +281,7 @@ module limn2600_Core
 
     always @(posedge clk) begin
         if(rst) begin
-            $display("cpu: Reset");
+            $display("%m: Reset");
             for(i = 0; i <= INSN_QUEUE_SIZE; i++) begin
                 fetch_addr_queue[i] = 0;
             end
@@ -294,7 +294,7 @@ module limn2600_Core
             stall_fetch <= 0;
             fetch_addr <= 32'hFFFE0000;
         end else if(irq) begin
-            $display("cpu: IRQ event!");
+            $display("%m: IRQ event!");
             ctl_regs[CREG_EBADADDR] <= pc;
             pc <= ctl_regs[CREG_EVEC];
             ctl_regs[CREG_RS][31:28] <= ECAUSE_INTERRUPT;
@@ -310,9 +310,9 @@ module limn2600_Core
         cs <= 1;
         addr <= rw_addr;
         if(stall_fetch) begin
-            $display("cpu_fetch: Stalled!");
+            $display("%m: (Fetch) Stalled!");
             if(state == S_READ) begin
-                $display("cpu: S_READ");
+                $display("%m: S_READ");
                 stall_fetch <= 1;
                 we <= 0; // Read value and emplace on register
                 if(rdy) begin // Appropriately apply masks
@@ -339,7 +339,7 @@ module limn2600_Core
             end else if(state == S_PREWRITE) begin
                 // Prewrite is in charge of reading the value and then writting it back with the desired offset
                 // so we can support unaligned accesses
-                $display("cpu: S_PREWRITE");
+                $display("%m: S_PREWRITE");
                 stall_fetch <= 1;
                 we <= 0; // Read the value first
                 if(rdy) begin
@@ -358,7 +358,7 @@ module limn2600_Core
                             state <= S_EXECUTE;
                             stall_fetch <= 0;
                         end else begin // Unaligned access
-                            $display("cpu: unaligned write of long!");
+                            $display("%m: unaligned write of long!");
                             ctl_regs[CREG_EBADADDR] <= pc;
                             pc <= ctl_regs[CREG_EVEC];
                             ctl_regs[CREG_RS][31:28] <= ECAUSE_UNALIGNED;
@@ -371,21 +371,21 @@ module limn2600_Core
                         end
                     endcase
                     state <= S_WRITE;
-                    $display("cpu: write_value=0x%h,rw_addr=0x%h,data_in=0x%h", write_value, rw_addr, data_in);
+                    $display("%m: write_value=0x%h,rw_addr=0x%h,data_in=0x%h", write_value, rw_addr, data_in);
                 end
             end else if(state == S_WRITE) begin
-                $display("cpu: S_WRITE");
+                $display("%m: S_WRITE");
                 stall_fetch <= 1;
                 we <= 1; // Write the value, then return to fetching
                 data_out <= write_value;
                 if(rdy) begin
-                    $display("cpu: data_out=0x%h,write_value=0x%h,addr=0x%h", data_out, write_value, addr);
+                    $display("%m: data_out=0x%h,write_value=0x%h,addr=0x%h", data_out, write_value, addr);
                     state <= S_EXECUTE;
                     stall_fetch <= 0;
                 end
             end
         end else begin
-            $display("cpu_fetch: Fetching,num=%d", fetch_inst_queue_num);
+            $display("%m: (Fetch) Fetching,num=%d", fetch_inst_queue_num);
             addr <= fetch_addr;
             we <= 0; // Read from memory
             icache_we <= 0;
@@ -393,7 +393,7 @@ module limn2600_Core
             // Once we can fetch instructions we save the state, but only if
             // we aren't overwriting something being used by the executor!
             if(rdy && fetch_inst_queue_num != execute_inst_queue_num) begin
-                $display("cpu_fetch: Fetched inst=%b,fetch-num=%d,exec-num=%d,fetch=0x%h", data_in, fetch_inst_queue_num, execute_inst_queue_num, fetch_addr);
+                $display("%m: (Fetch) Fetched inst=%b,fetch-num=%d,exec-num=%d,fetch=0x%h", data_in, fetch_inst_queue_num, execute_inst_queue_num, fetch_addr);
                 icache_we <= 1; // Send the fetched instruction onto the i-cache
                 fetch_addr_queue[fetch_inst_queue_num] <= 0; // Normally we don't branch
                 fetch_inst_queue_num <= fetch_inst_queue_num + 1; // Increment instruction number
@@ -403,7 +403,7 @@ module limn2600_Core
                     OP_JALR: begin end // TODO: Prediction for JALR
                     // JAL [imm29]
                     OP_J_OR_JAL: begin // This one is good because it's guaranteed to branch
-                        $display("cpu_branch_predict: jal [0x%h],lr=0x%h", { 3'h0, f_imm29 } << 2, fetch_addr + 4);
+                        $display("%m: (Branch Predict) jal [0x%h],lr=0x%h", { 3'h0, f_imm29 } << 2, fetch_addr + 4);
                         if(f_inst_lo[0] == 0) begin // JAL variant clobbers LR
                             regs_predict[REG_LR] <= regs_predict[REG_LR] | RP_NON_ZERO;
                         end
@@ -413,38 +413,38 @@ module limn2600_Core
                     // Branches's signs are checked, backwards branches are often used in loops
                     // BEQ ra, [imm21]
                     OP_BEQ: begin
-                        $display("cpu_branch_predict: beq r%d,[%h]", f_opreg1, f_imm21);
+                        $display("%m: (Branch Predict) beq r%d,[%h]", f_opreg1, f_imm21);
                         if(f_imm21[20] == 1 || 1) begin
                             if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
                             else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
                             fetch_addr_queue[fetch_inst_queue_num] <= 1;
-                            $display("cpu_branch_predict: Will be taken");
+                            $display("%m: (Branch Predict) Will be taken");
                         end else begin
-                            $display("cpu_branch_predict: Will not be taken");
+                            $display("%m: (Branch Predict) Will not be taken");
                         end
                         end
                     // BNE ra, [imm21]
                     OP_BNE: begin
-                        $display("cpu_branch_predict: bne r%d,[%h]", f_opreg1, f_imm21);
+                        $display("%m: (Branch Predict) bne r%d,[%h]", f_opreg1, f_imm21);
                         if(f_imm21[20] == 1 || 1) begin
                             if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
                             else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
                             fetch_addr_queue[fetch_inst_queue_num] <= 1;
-                            $display("cpu_branch_predict: Will be taken");
+                            $display("%m: (Branch Predict) Will be taken");
                         end else begin
-                            $display("cpu_branch_predict: Will not be taken");
+                            $display("%m: (Branch Predict) Will not be taken");
                         end
                         end
                     // BLT ra, [imm21]
                     OP_BLT: begin
-                        $display("cpu_branch_predict: blt r%d,[%h]", f_opreg1, f_imm21);
+                        $display("%m: (Branch Predict) blt r%d,[%h]", f_opreg1, f_imm21);
                         if(f_imm21[20] == 1 || (regs_predict[f_opreg1] & RP_ZERO) == 1) begin
                             if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
                             else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
                             fetch_addr_queue[fetch_inst_queue_num] <= 1;
-                            $display("cpu_branch_predict: Will be taken");
+                            $display("%m: (Branch Predict) Will be taken");
                         end else begin
-                            $display("cpu_branch_predict: Will not be taken");
+                            $display("%m: (Branch Predict) Will not be taken");
                         end
                         end
                     // ADDI [rd], [rd], [imm16]
@@ -484,7 +484,7 @@ module limn2600_Core
                         end
                         end
                     6'b10_1001: begin
-                        $display("cpu_branch_predict: privileged_inst");
+                        $display("%m: (Branch Predict) privileged_inst");
                         casez(f_inst_hi[5:2])
                         OP_G2_MFCR: begin end
                         OP_G2_MTCR: begin end
@@ -494,7 +494,7 @@ module limn2600_Core
                         endcase
                         end
                     6'b11_0001: begin
-                        $display("cpu_branch_predict: special_insn");
+                        $display("%m: (Branch Predict) special_insn");
                         casez(f_inst_hi[5:2])
                             OP_G3_DIV: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
                             OP_G3_DIVS: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
@@ -518,24 +518,24 @@ module limn2600_Core
         if(!stall_execute) begin
             for(i = 0; i <= INSN_QUEUE_SIZE; i++) begin
                 if(i[3:0] == fetch_inst_queue_num) begin
-                    $display("cpu: insn_queue #%2d addr=0x%h <-- FETCH", i, fetch_addr_queue[i]);
+                    $display("%m: insn_queue #%2d addr=0x%h <-- FETCH", i, fetch_addr_queue[i]);
                 end else if(i[3:0] == execute_inst_queue_num) begin
-                    $display("cpu: insn_queue #%2d addr=0x%h <-- EXECUTE", i, fetch_addr_queue[i]);
+                    $display("%m: insn_queue #%2d addr=0x%h <-- EXECUTE", i, fetch_addr_queue[i]);
                 end else begin
-                    $display("cpu: insn_queue #%2d addr=0x%h", i, fetch_addr_queue[i]);
+                    $display("%m: insn_queue #%2d addr=0x%h", i, fetch_addr_queue[i]);
                 end
             end
 
             if(state == S_BRANCHED) begin
-                $display("cpu: S_BRANCHED");
+                $display("%m: S_BRANCHED");
                 // We have to decrement 1 the instruction number of the execution unit because it is automatically incremented by the
                 // parallel executor thread (see below)
                 if(took_branch != fetch_addr_queue[execute_inst_queue_num]) begin
-                    $display("cpu_branch_predict: Failed prediction pc=0x%h", pc);
+                    $display("%m: (Branch Predict) Failed prediction pc=0x%h", pc);
                     if(took_branch == 1) begin
-                        $display("cpu_branch_predict: I tought it wouldn't branch, but it did");
+                        $display("%m: (Branch Predict) I tought it wouldn't branch, but it did");
                     end else begin
-                        $display("cpu_branch_predict: I tought it would branch, but it did");
+                        $display("%m: (Branch Predict) I tought it would branch, but it did");
                     end
 
                     for(i = 0; i <= INSN_QUEUE_SIZE; i++) begin // Reset fetching
@@ -549,23 +549,23 @@ module limn2600_Core
                     // so let's unstall the fetcher
                     fetch_addr <= pc;
                 end else begin
-                    $display("cpu_branch_predict: Success! prediction pc=0x%h", pc);
+                    $display("%m: (Branch Predict) Success! prediction pc=0x%h", pc);
                 end
                 state <= S_EXECUTE;
                 stall_fetch <= 0;
             end else begin
-                $display("cpu: Execution,num=%d,icache_data_out=0x%h,inst=0x%h,addr=0x%h,pc=0x%h", execute_inst_queue_num, icache_data_out, execute_inst, fetch_addr_queue[execute_inst_queue_num], pc);
+                $display("%m: Execution,num=%d,icache_data_out=0x%h,inst=0x%h,addr=0x%h,pc=0x%h", execute_inst_queue_num, icache_data_out, execute_inst, fetch_addr_queue[execute_inst_queue_num], pc);
                 took_branch <= 0;
                 execute_inst_queue_num <= execute_inst_queue_num + 1;
                 casez(inst_lo)
                     // This is an invalid opcode, but used internally as a "true no-op", no PC is modified
                     // no anything is modified, good for continuing the executor without stanling
                     6'b00_0000: begin
-                        $display("cpu: tnop");
+                        $display("%m: tnop");
                         end
                     // JALR [rd], [ra], [imm29]
                     OP_JALR: begin
-                        $display("cpu: jalr r%d,r%d,[%h]", opreg1, opreg2, { 8'h0, imm16 } << 2);
+                        $display("%m: jalr r%d,r%d,[%h]", opreg1, opreg2, { 8'h0, imm16 } << 2);
                         regs[opreg1] <= pc + 4;
                         pc <= regs[opreg2] + ({ 16'h0, imm16 } << 2); // TODO: Sign extend
                         // No need to stall or inform of a branch, since we can accurately
@@ -576,7 +576,7 @@ module limn2600_Core
                         end
                     // JAL [imm29]
                     OP_J_OR_JAL: begin
-                        $display("cpu: jal [0x%8h],lr=0x%8h", { 3'h0, imm29 } << 2, pc + 4);
+                        $display("%m: jal [0x%8h],lr=0x%8h", { 3'h0, imm29 } << 2, pc + 4);
                         if(execute_inst[0] == 1) begin
                             regs[REG_LR] <= pc + 4;
                         end
@@ -587,9 +587,9 @@ module limn2600_Core
                         end
                     // BEQ ra, [imm21]
                     OP_BEQ: begin
-                        $display("cpu: beq r%d,[%h]", opreg1, imm21);
+                        $display("%m: beq r%d,[%h]", opreg1, imm21);
                         if(regs[opreg1] == 32'h0) begin
-                            $display("cpu: Branch taken!");
+                            $display("%m: Branch taken!");
                             if(imm21[20] == 1) pc <= pc - ({ 12'h0, imm21[19:0] } << 2);
                             else pc <= pc + ({ 12'h0, imm21[19:0] } << 2);
                             took_branch <= 1;
@@ -601,9 +601,9 @@ module limn2600_Core
                         end
                     // BNE ra, [imm21]
                     OP_BNE: begin
-                        $display("cpu: bne r%d,[%h]", opreg1, imm21);
+                        $display("%m: bne r%d,[%h]", opreg1, imm21);
                         if(regs[opreg1] != 32'h0) begin
-                            $display("cpu: Branch taken!");
+                            $display("%m: Branch taken!");
                             if(imm21[20] == 1) pc <= pc - ({ 12'h0, imm21[19:0] } << 2);
                             else pc <= pc + ({ 12'h0, imm21[19:0] } << 2);
                             took_branch <= 1;
@@ -615,9 +615,9 @@ module limn2600_Core
                         end
                     // BLT ra, [imm21]
                     OP_BLT: begin
-                        $display("cpu: blt r%d,[%h]", opreg1, imm21);
+                        $display("%m: blt r%d,[%h]", opreg1, imm21);
                         if(regs[opreg1][31] == 0) begin
-                            $display("cpu: Branch taken!");
+                            $display("%m: Branch taken!");
                             if(imm21[20] == 1) pc <= pc - ({ 12'h0, imm21[19:0] } << 2);
                             else pc <= pc + ({ 12'h0, imm21[19:0] } << 2);
                             took_branch <= 1;
@@ -636,9 +636,9 @@ module limn2600_Core
                     // ORI [rd], [rd], [imm16]
                     // LUI [rd], [rd], [imm16]
                     6'b??_?100: begin
-                        $display("cpu: imm_alu_inst r%d,r%d,[0x%h]", opreg1, opreg2, imm16);
+                        $display("%m: imm_alu_inst r%d,r%d,[0x%h]", opreg1, opreg2, imm16);
                         if(inst_lo[5:3] == 0) begin // LUI
-                            $display("cpu: lui r%d,r%d,[0x%h]", opreg1, opreg2, imm16);
+                            $display("%m: lui r%d,r%d,[0x%h]", opreg1, opreg2, imm16);
                             regs[opreg1] <= regs[opreg2] | ({ 16'b0, imm16 } << 16);
                             // TODO: Fuse OPS for example LA comes as LUI+ORI
                         end else begin // Rest of ops
@@ -647,7 +647,7 @@ module limn2600_Core
                         pc <= pc + 4;
                         end
                     6'b1?_?011: begin // MOV rd, [ra + imm16]
-                        $display("cpu: mov(16)(R) [r%d+%h],r%d,sz=%b", opreg1, { 8'h0, imm16 }, opreg2, inst_lo[4:3]);
+                        $display("%m: mov(16)(R) [r%d+%h],r%d,sz=%b", opreg1, { 8'h0, imm16 }, opreg2, inst_lo[4:3]);
                         trans_size <= inst_lo[4:3]; // Check OP_G1_MV_BITMASK
                         read_regno <= opreg1;
                         rw_addr <= regs[opreg2] + { 16'h0, imm16 };
@@ -656,7 +656,7 @@ module limn2600_Core
                         pc <= pc + 4;
                         end
                     6'b??_?010: begin // MOV [ra + imm16], rd
-                        $display("cpu: mov(5)(W) [r%d+%h],[%d],sz=%b", opreg1, { 8'h0, imm16 }, imm5, inst_lo[4:3]);
+                        $display("%m: mov(5)(W) [r%d+%h],[%d],sz=%b", opreg1, { 8'h0, imm16 }, imm5, inst_lo[4:3]);
                         trans_size <= inst_lo[4:3]; // Check OP_G1_MV_BITMASK
                         if(inst_lo[5] == 0) begin // Write immediate
                             write_value <= { 27'h0, imm5 };
@@ -670,7 +670,7 @@ module limn2600_Core
                         end
                     // Instructions starting with 111001
                     6'b11_1001: begin
-                        $display("cpu: alu_inst r%d,r%d,r%d,instmode=%b,op=%b", opreg1, opreg2, opreg3, opg1_instmode, inst_hi);
+                        $display("%m: alu_inst r%d,r%d,r%d,instmode=%b,op=%b", opreg1, opreg2, opreg3, opg1_instmode, inst_hi);
                         // Instmode
                         casez(opg1_instmode)
                             OPM_G1_LHS: tmp32 <= regs[opreg3] >> { 26'h0, imm5};
@@ -680,7 +680,7 @@ module limn2600_Core
                         endcase
 
                         if(inst_hi[4:2] == OP_NOR) begin
-                            $display("cpu: nor");
+                            $display("%m: nor");
                             regs[opreg1] <= ~(regs[opreg2] | tmp32);
                         end else begin
                             regs[opreg1] <= alu_op_result(inst_hi[4:2], regs[opreg2], tmp32);
@@ -690,7 +690,7 @@ module limn2600_Core
                         if(inst_hi[5] == 1 && (inst_hi[4:2] & 3'b111) != 0) begin
                             casez(inst_hi[5:2])
                                 OP_G1_MOV_FR: begin // Move-From-Registers
-                                    $display("cpu: mov(FR) [r%d+r%d+%d],r%d,sz=%b", opreg2, opreg3, imm5, opreg1, inst_hi[3:2]);
+                                    $display("%m: mov(FR) [r%d+r%d+%d],r%d,sz=%b", opreg2, opreg3, imm5, opreg1, inst_hi[3:2]);
                                     trans_size <= inst_hi[3:2]; // Check OP_G1_MV_BITMASK
                                     write_value <= regs[opreg1];
                                     rw_addr <= regs[opreg2] + tmp32;
@@ -698,7 +698,7 @@ module limn2600_Core
                                     stall_fetch <= 1;
                                     end
                                 OP_G1_MOV_TR: begin // Move-To-Register
-                                    $display("cpu: mov(TR) r%d,[r%d+r%d+%d],sz=%b", opreg1, opreg2, opreg3, imm5, inst_hi[3:2]);
+                                    $display("%m: mov(TR) r%d,[r%d+r%d+%d],sz=%b", opreg1, opreg2, opreg3, imm5, inst_hi[3:2]);
                                     trans_size <= inst_hi[3:2]; // Check OP_G1_MV_BITMASK
                                     read_regno <= opreg1;
                                     rw_addr <= regs[opreg2] + tmp32;
@@ -711,21 +711,21 @@ module limn2600_Core
                         pc <= pc + 4;
                         end
                     6'b10_1001: begin
-                        $display("cpu: privileged_inst");
+                        $display("%m: privileged_inst");
                         casez(inst_hi[5:2])
                         OP_G2_MFCR: begin
-                            $display("cpu: mtcr r%d,cr%d", opreg1, opreg3);
+                            $display("%m: mtcr r%d,cr%d", opreg1, opreg3);
                             regs[opreg1] <= ctl_regs[opreg3];
                             pc <= pc + 4;
                             end
                         OP_G2_MTCR: begin
-                            $display("cpu: mtcr cr%d,r%d", opreg3, opreg2);
+                            $display("%m: mtcr cr%d,r%d", opreg3, opreg2);
                             ctl_regs[opreg3] <= regs[opreg2];
                             pc <= pc + 4;
                             end
                         // CACHEI [imm22]
                         OP_G2_CACHEI: begin
-                            $display("cpu: cachei [%h]", imm22);
+                            $display("%m: cachei [%h]", imm22);
                             pc <= pc + 4;
                             end
                         // FWC [imm22]
@@ -735,12 +735,12 @@ module limn2600_Core
                             ctl_regs[CREG_RS][31:28] <= ECAUSE_SYSCALL;
                             end
                         OP_G2_HLT: begin
-                            $display("cpu: hlt [%h]", imm22);
+                            $display("%m: hlt [%h]", imm22);
                             pc <= pc + 4;
                             state <= S_HALT;
                             end
                         default: begin // Invalid instruction
-                            $display("cpu: invalid_grp2=0b%b", inst_hi[5:2]);
+                            $display("%m: invalid_grp2=0b%b", inst_hi[5:2]);
                             ctl_regs[CREG_EBADADDR] <= pc;
                             pc <= ctl_regs[CREG_EVEC];
                             ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
@@ -748,10 +748,10 @@ module limn2600_Core
                         endcase
                         end
                     6'b11_0001: begin
-                        $display("cpu: advanced_cohost_alu");
+                        $display("%m: advanced_cohost_alu");
                         casez(inst_hi[5:2])
                             OP_G3_BRK: begin
-                                $display("cpu: brk [%h]", imm22);
+                                $display("%m: brk [%h]", imm22);
                                 // TODO: Is imm22 used at all?
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
@@ -762,7 +762,7 @@ module limn2600_Core
                             OP_G3_DIV: begin
                                 if(opreg4 != 5'b0) begin
                                     // Raise UD
-                                    $display("cpu: exception - invalid div inst=%b", execute_inst);
+                                    $display("%m: exception - invalid div inst=%b", execute_inst);
                                     ctl_regs[CREG_EBADADDR] <= pc;
                                     pc <= ctl_regs[CREG_EVEC];
                                     ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
@@ -776,7 +776,7 @@ module limn2600_Core
                             OP_G3_DIVS: begin
                                 if(opreg4 != 5'b0) begin
                                     // Raise UD
-                                    $display("cpu: exception - invalid divs inst=%b", execute_inst);
+                                    $display("%m: exception - invalid divs inst=%b", execute_inst);
                                     ctl_regs[CREG_EBADADDR] <= pc;
                                     pc <= ctl_regs[CREG_EVEC];
                                     ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
@@ -795,7 +795,7 @@ module limn2600_Core
                             OP_G3_MOD: begin
                                 if(opreg4 != 5'b0) begin
                                     // Raise UD
-                                    $display("cpu: exception - invalid mod inst=%b", execute_inst);
+                                    $display("%m: exception - invalid mod inst=%b", execute_inst);
                                     ctl_regs[CREG_EBADADDR] <= pc;
                                     pc <= ctl_regs[CREG_EVEC];
                                     ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
@@ -809,7 +809,7 @@ module limn2600_Core
                             OP_G3_MUL: begin
                                 if(opreg4 != 5'b0) begin
                                     // Raise UD
-                                    $display("cpu: exception - invalid mul inst=%b", execute_inst);
+                                    $display("%m: exception - invalid mul inst=%b", execute_inst);
                                     ctl_regs[CREG_EBADADDR] <= pc;
                                     pc <= ctl_regs[CREG_EVEC];
                                     ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
@@ -825,7 +825,7 @@ module limn2600_Core
                                 pc <= pc + 4;
                                 end
                             OP_G3_SYS: begin
-                                $display("cpu: sys [%h]", imm22);
+                                $display("%m: sys [%h]", imm22);
                                 // TODO: Is imm22 used at all?
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
@@ -838,7 +838,7 @@ module limn2600_Core
                         endcase
                         end
                     default: begin
-                        $display("cpu: invalid_opcode,inst=%b", execute_inst);
+                        $display("%m: invalid_opcode,inst=%b", execute_inst);
                         ctl_regs[CREG_EBADADDR] <= pc;
                         pc <= ctl_regs[CREG_EVEC];
                         ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
@@ -851,9 +851,9 @@ module limn2600_Core
     end
 
     always @(posedge clk) begin
-        $display("cpu: state=%d,pc=0x%8h,data_in=0x%8h,data_out=0x%8h,addr=0x%8h", state, pc, data_in, data_out, addr);
+        $display("%m: state=%d,pc=0x%8h,data_in=0x%8h,data_out=0x%8h,addr=0x%8h", state, pc, data_in, data_out, addr);
         for(i = 0; i < 32; i = i + 8) begin
-            $display("cpu: %2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h", i, regs[i], i + 1, regs[i + 1], i + 2, regs[i + 2], i + 3, regs[i + 3], i + 4, regs[i + 4], i + 5, regs[i + 5], i + 6, regs[i + 6], i + 7, regs[i + 7]);
+            $display("%m: %2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h", i, regs[i], i + 1, regs[i + 1], i + 2, regs[i + 2], i + 3, regs[i + 3], i + 4, regs[i + 4], i + 5, regs[i + 5], i + 6, regs[i + 6], i + 7, regs[i + 7]);
         end
     end
 endmodule
