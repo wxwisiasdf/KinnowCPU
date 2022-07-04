@@ -1,4 +1,5 @@
-module limn2600_ALU(
+module limn2600_ALU
+( // Parameter
     input rst,
     input clk,
     input [2:0] op,
@@ -59,7 +60,11 @@ endmodule
 // for executing the whole instruction queue
 //
 ///////////////////////////////////////////////////////////////////////////////
-module limn2600_Core(
+module limn2600_Core
+#( // Parameter
+    parameter INSN_QUEUE_SIZE = 16
+)
+( // Interface
     input rst,
     input clk,
     input irq,
@@ -140,10 +145,10 @@ module limn2600_Core(
     
     // Instruction fetcher
     reg stall_fetch;
-    reg [31:0] fetch_inst_queue[0:16]; // Instruction fetched
-    reg [31:0] fetch_addr_queue[0:16]; // ^ Address of
+    reg [31:0] fetch_inst_queue[0:INSN_QUEUE_SIZE]; // Instruction fetched
+    reg [31:0] fetch_addr_queue[0:INSN_QUEUE_SIZE]; // ^ Address of
     reg [31:0] fetch_addr; // Address to fetch on, reset on JAL/J/BR
-    reg [31:0] execute_inst; // Instruction to execute
+    wire [31:0] execute_inst = icache_data_out; // Instruction to execute
     reg [3:0] fetch_inst_queue_num;
     reg [3:0] execute_inst_queue_num;
 
@@ -261,20 +266,20 @@ module limn2600_Core(
 
     integer i;
 
-/*
-    wire icache_we;
-    wire [31:0] icache_addr;
-    wire [31:0] icache_data_in;
+    reg icache_we;
+    reg [31:0] icache_addr_in;
+    reg [31:0] icache_addr_out;
+    reg [31:0] icache_data_in;
     wire [31:0] icache_data_out;
     limn2600_cache icache(
         .rst(rst),
         .clk(clk),
         .we(icache_we),
-        .addr(icache_addr),
+        .addr_in(icache_addr_in),
+        .addr_out(icache_addr_out),
         .data_in(icache_data_in),
         .data_out(icache_data_out)
     );
-*/
 
     always @(rst) begin
         pc <= 32'hFFFE0000;
@@ -285,7 +290,8 @@ module limn2600_Core(
         end
         fetch_inst_queue_num <= 0;
         execute_inst_queue_num <= 0;
-        execute_inst <= OP_TRULY_NOP;
+        icache_addr_out <= 0;
+        icache_addr_in <= 0;
         stall_execute <= 0;
         stall_fetch <= 0;
         fetch_addr <= 32'hFFFE0000;
@@ -388,17 +394,22 @@ module limn2600_Core(
             $display("cpu_fetch: Fetching,num=%d", fetch_inst_queue_num);
             addr <= fetch_addr;
             we <= 0; // Read from memory
+            icache_we <= 0;
             // Once we can fetch instructions we save the state, but only if
             // we aren't overwriting something being used by the executor!
             if(rdy && (fetch_inst_queue_num + 1) != execute_inst_queue_num) begin
                 $display("cpu_fetch: Fetched inst=%b,fetch-num=%d,exec-num=%d,fetch=0x%h", data_in, fetch_inst_queue_num, execute_inst_queue_num, fetch_addr);
+                // Send the fetched instruction onto the i-cache
+                icache_we <= 1;
+                icache_data_in <= data_in;
+                icache_addr_in <= fetch_addr;
                 // We "clean-path" the element after the one we just placed
                 // this ensures there aren't any left-overs from fetching
                 fetch_inst_queue[fetch_inst_queue_num] <= data_in;
                 fetch_addr_queue[fetch_inst_queue_num] <= fetch_addr;
                 fetch_inst_queue[fetch_inst_queue_num + 1] <= OP_TRULY_NOP;
                 fetch_addr_queue[fetch_inst_queue_num + 1] <= 32'b0;
-                fetch_inst_queue_num <= fetch_inst_queue_num + 1;
+                fetch_inst_queue_num <= fetch_inst_queue_num + 1; // Increment instruction number
                 fetch_addr <= fetch_addr + 4; // Advance to next op
                 casez(f_inst_lo)
                     // JALR [rd], [ra], [imm29]
@@ -414,7 +425,7 @@ module limn2600_Core(
                     // Branches's signs are checked, backwards branches are often used in loops
                     // BEQ ra, [imm21]
                     OP_BEQ: begin
-                        if(f_imm21[20] == 1 || (regs_predict[f_opreg1] & RP_NON_ZERO) == 0) begin
+                        if(f_imm21[20] == 1 || 1) begin
                             if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 10'h0, f_imm21[19:0] } << 2);
                             else fetch_addr <= fetch_addr - ({ 10'h0, f_imm21[19:0] } << 2);
                         end
@@ -501,6 +512,7 @@ module limn2600_Core(
 
     // Execution thread
     always @(posedge clk) begin
+        icache_addr_out <= pc;
         if(!stall_execute) begin
             if(state == S_BRANCHED) begin
                 $display("cpu: S_BRANCHED");
@@ -514,7 +526,6 @@ module limn2600_Core(
                     end
                     fetch_inst_queue_num <= 0;
                     execute_inst_queue_num <= 0;
-                    execute_inst <= OP_TRULY_NOP;
                     stall_execute <= 0;
                     stall_fetch <= 0;
                     // This is used to update the fetch address after an exception or PC, meaning we had to stall
@@ -526,8 +537,7 @@ module limn2600_Core(
                 state <= S_EXECUTE;
                 stall_fetch <= 0;
             end else begin
-                $display("cpu: Execution,num=%d,inst=%b<0x%h>,addr=0x%h,pc=0x%h", execute_inst_queue_num, execute_inst, execute_inst, fetch_addr_queue[execute_inst_queue_num], pc);
-                execute_inst <= fetch_inst_queue[execute_inst_queue_num];
+                $display("cpu: Execution,num=%d,icache_data_out=0x%h,inst=0x%h,addr=0x%h,pc=0x%h", execute_inst_queue_num, icache_data_out, execute_inst, fetch_addr_queue[execute_inst_queue_num], pc);
                 execute_inst_queue_num <= execute_inst_queue_num + 1;
                 casez(inst_lo)
                     // This is an invalid opcode, but used internally as a "true no-op", no PC is modified

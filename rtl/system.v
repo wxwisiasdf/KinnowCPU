@@ -51,7 +51,7 @@ module limn2600_System;
         #0 rst = 1'b1;
         #1 rst = 1'b0;
 
-        clk = 1'b0;
+        #4 clk = 1'b0;
         for(i = 0; i < 1000; i++) begin
             #0 $display("perf: Begin tick %8t", $time);
             #0 clk = ~clk;
