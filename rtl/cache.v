@@ -48,6 +48,6 @@ module limn2600_cache
     end
 
     initial begin
-        $display("cache: Size=%dKB", (NUM_ENTRIES / 1000) * (DATA_WIDTH / 8));
+        $display("cache: size=%0dKB,data_width=%0d bits", (NUM_ENTRIES / 1000) * (DATA_WIDTH / 8), DATA_WIDTH);
     end
 endmodule

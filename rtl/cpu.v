@@ -128,6 +128,7 @@ module limn2600_Core
     reg [31:0] ctl_regs[0:31];
     reg [31:0] pc; // Program counter
     reg [2:0] state;
+    reg took_branch; // Whetever a branch was taken (state)
 
     // I/O machine
     reg [1:0] trans_size; // Memory transfer size
@@ -267,14 +268,13 @@ module limn2600_Core
 
     reg icache_we;
     reg [31:0] icache_addr_in;
-    reg [31:0] icache_addr_out;
     wire [31:0] icache_data_out;
     limn2600_cache icache(
         .rst(rst),
         .clk(clk),
         .we(icache_we),
         .addr_in(icache_addr_in),
-        .addr_out(icache_addr_out),
+        .addr_out(pc),
         .data_in(data_in),
         .data_out(icache_data_out)
     );
@@ -282,14 +282,13 @@ module limn2600_Core
     always @(posedge clk) begin
         if(rst) begin
             $display("cpu: Reset");
-            for(i = 0; i < INSN_QUEUE_SIZE; i++) begin
+            for(i = 0; i <= INSN_QUEUE_SIZE; i++) begin
                 fetch_addr_queue[i] = 0;
             end
             pc <= 32'hFFFE0000;
             state <= S_EXECUTE;
             fetch_inst_queue_num <= 0;
             execute_inst_queue_num <= 0;
-            icache_addr_out <= 0;
             icache_addr_in <= 0;
             stall_execute <= 0;
             stall_fetch <= 0;
@@ -393,7 +392,7 @@ module limn2600_Core
             icache_addr_in <= fetch_addr;
             // Once we can fetch instructions we save the state, but only if
             // we aren't overwriting something being used by the executor!
-            if(rdy) begin
+            if(rdy && fetch_inst_queue_num != execute_inst_queue_num) begin
                 $display("cpu_fetch: Fetched inst=%b,fetch-num=%d,exec-num=%d,fetch=0x%h", data_in, fetch_inst_queue_num, execute_inst_queue_num, fetch_addr);
                 icache_we <= 1; // Send the fetched instruction onto the i-cache
                 fetch_addr_queue[fetch_inst_queue_num] <= 0; // Normally we don't branch
@@ -414,26 +413,38 @@ module limn2600_Core
                     // Branches's signs are checked, backwards branches are often used in loops
                     // BEQ ra, [imm21]
                     OP_BEQ: begin
+                        $display("cpu_branch_predict: beq r%d,[%h]", f_opreg1, f_imm21);
                         if(f_imm21[20] == 1 || 1) begin
                             if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
                             else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
                             fetch_addr_queue[fetch_inst_queue_num] <= 1;
+                            $display("cpu_branch_predict: Will be taken");
+                        end else begin
+                            $display("cpu_branch_predict: Will not be taken");
                         end
                         end
                     // BNE ra, [imm21]
                     OP_BNE: begin
+                        $display("cpu_branch_predict: bne r%d,[%h]", f_opreg1, f_imm21);
                         if(f_imm21[20] == 1 || 1) begin
                             if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
                             else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
                             fetch_addr_queue[fetch_inst_queue_num] <= 1;
+                            $display("cpu_branch_predict: Will be taken");
+                        end else begin
+                            $display("cpu_branch_predict: Will not be taken");
                         end
                         end
                     // BLT ra, [imm21]
                     OP_BLT: begin
+                        $display("cpu_branch_predict: blt r%d,[%h]", f_opreg1, f_imm21);
                         if(f_imm21[20] == 1 || (regs_predict[f_opreg1] & RP_ZERO) == 1) begin
                             if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
                             else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
                             fetch_addr_queue[fetch_inst_queue_num] <= 1;
+                            $display("cpu_branch_predict: Will be taken");
+                        end else begin
+                            $display("cpu_branch_predict: Will not be taken");
                         end
                         end
                     // ADDI [rd], [rd], [imm16]
@@ -504,15 +515,30 @@ module limn2600_Core
 
     // Execution thread
     always @(posedge clk) begin
-        icache_addr_out <= pc;
         if(!stall_execute) begin
+            for(i = 0; i <= INSN_QUEUE_SIZE; i++) begin
+                if(i[3:0] == fetch_inst_queue_num) begin
+                    $display("cpu: insn_queue #%2d addr=0x%h <-- FETCH", i, fetch_addr_queue[i]);
+                end else if(i[3:0] == execute_inst_queue_num) begin
+                    $display("cpu: insn_queue #%2d addr=0x%h <-- EXECUTE", i, fetch_addr_queue[i]);
+                end else begin
+                    $display("cpu: insn_queue #%2d addr=0x%h", i, fetch_addr_queue[i]);
+                end
+            end
+
             if(state == S_BRANCHED) begin
                 $display("cpu: S_BRANCHED");
                 // We have to decrement 1 the instruction number of the execution unit because it is automatically incremented by the
                 // parallel executor thread (see below)
-                if(1) begin
+                if(took_branch != fetch_addr_queue[execute_inst_queue_num]) begin
                     $display("cpu_branch_predict: Failed prediction pc=0x%h", pc);
-                    for(i = 0; i < INSN_QUEUE_SIZE; i++) begin // Reset fetching
+                    if(took_branch == 1) begin
+                        $display("cpu_branch_predict: I tought it wouldn't branch, but it did");
+                    end else begin
+                        $display("cpu_branch_predict: I tought it would branch, but it did");
+                    end
+
+                    for(i = 0; i <= INSN_QUEUE_SIZE; i++) begin // Reset fetching
                         fetch_addr_queue[i] = 0;
                     end
                     fetch_inst_queue_num <= 0;
@@ -529,15 +555,7 @@ module limn2600_Core
                 stall_fetch <= 0;
             end else begin
                 $display("cpu: Execution,num=%d,icache_data_out=0x%h,inst=0x%h,addr=0x%h,pc=0x%h", execute_inst_queue_num, icache_data_out, execute_inst, fetch_addr_queue[execute_inst_queue_num], pc);
-                for(i = 0; i < INSN_QUEUE_SIZE; i++) begin
-                    if(i[3:0] == fetch_inst_queue_num) begin
-                        $display("cpu: insn_queue #%2d addr=0x%h <-- FETCH", i, fetch_addr_queue[i]);
-                    end else if(i[3:0] == execute_inst_queue_num) begin
-                        $display("cpu: insn_queue #%2d addr=0x%h <-- EXECUTE", i, fetch_addr_queue[i]);
-                    end else begin
-                        $display("cpu: insn_queue #%2d addr=0x%h", i, fetch_addr_queue[i]);
-                    end
-                end
+                took_branch <= 0;
                 execute_inst_queue_num <= execute_inst_queue_num + 1;
                 casez(inst_lo)
                     // This is an invalid opcode, but used internally as a "true no-op", no PC is modified
@@ -552,6 +570,9 @@ module limn2600_Core
                         pc <= regs[opreg2] + ({ 16'h0, imm16 } << 2); // TODO: Sign extend
                         // No need to stall or inform of a branch, since we can accurately
                         // predict that this jump will ALWAYS happen
+                        stall_fetch <= 1;
+                        state <= S_BRANCHED;
+                        took_branch <= 1;
                         end
                     // JAL [imm29]
                     OP_J_OR_JAL: begin
@@ -560,15 +581,18 @@ module limn2600_Core
                             regs[REG_LR] <= pc + 4;
                         end
                         pc <= (pc & 32'h80000000) | ({ 3'h0, imm29 } << 2);
-                        stall_fetch <= 1;
-                        state <= S_BRANCHED;
+                        // No need to stall or inform of a branch, since we can accurately
+                        // predict that this jump will ALWAYS happen
+                        took_branch <= 1;
                         end
                     // BEQ ra, [imm21]
                     OP_BEQ: begin
                         $display("cpu: beq r%d,[%h]", opreg1, imm21);
                         if(regs[opreg1] == 32'h0) begin
+                            $display("cpu: Branch taken!");
                             if(imm21[20] == 1) pc <= pc - ({ 12'h0, imm21[19:0] } << 2);
                             else pc <= pc + ({ 12'h0, imm21[19:0] } << 2);
+                            took_branch <= 1;
                         end else begin
                             pc <= pc + 4;
                         end
@@ -579,8 +603,10 @@ module limn2600_Core
                     OP_BNE: begin
                         $display("cpu: bne r%d,[%h]", opreg1, imm21);
                         if(regs[opreg1] != 32'h0) begin
+                            $display("cpu: Branch taken!");
                             if(imm21[20] == 1) pc <= pc - ({ 12'h0, imm21[19:0] } << 2);
                             else pc <= pc + ({ 12'h0, imm21[19:0] } << 2);
+                            took_branch <= 1;
                         end else begin
                             pc <= pc + 4;
                         end
@@ -591,8 +617,10 @@ module limn2600_Core
                     OP_BLT: begin
                         $display("cpu: blt r%d,[%h]", opreg1, imm21);
                         if(regs[opreg1][31] == 0) begin
+                            $display("cpu: Branch taken!");
                             if(imm21[20] == 1) pc <= pc - ({ 12'h0, imm21[19:0] } << 2);
                             else pc <= pc + ({ 12'h0, imm21[19:0] } << 2);
+                            took_branch <= 1;
                         end else begin
                             pc <= pc + 4;
                         end
@@ -695,9 +723,16 @@ module limn2600_Core
                             ctl_regs[opreg3] <= regs[opreg2];
                             pc <= pc + 4;
                             end
+                        // CACHEI [imm22]
                         OP_G2_CACHEI: begin
                             $display("cpu: cachei [%h]", imm22);
                             pc <= pc + 4;
+                            end
+                        // FWC [imm22]
+                        4'b1010: begin
+                            ctl_regs[CREG_EBADADDR] <= pc;
+                            pc <= ctl_regs[CREG_FWVEC];
+                            ctl_regs[CREG_RS][31:28] <= ECAUSE_SYSCALL;
                             end
                         OP_G2_HLT: begin
                             $display("cpu: hlt [%h]", imm22);
