@@ -1,5 +1,6 @@
 `timescale 1ns / 1ps
 
+`include "rtl/cache.v"
 `include "rtl/cpu.v"
 `include "rtl/sram.v"
 
@@ -9,6 +10,7 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 module limn2600_System;
+    integer i;
     reg rst;
     reg clk;
     wire we;
@@ -43,23 +45,19 @@ module limn2600_System;
     );
 
     initial begin
-        clk = 1'b0;
-        forever begin
-            #0 $display("perf: Begin tick %8t", $time);
-            #0 clk = ~clk;
-            #1 $display("perf: End tick   %8t", $time);
-            #1 clk = ~clk;
-        end
-    end
-
-    initial begin
         $display("Limn2600 Verilog SoC!");
 
         // "Press" reset button
         #0 rst = 1'b1;
         #1 rst = 1'b0;
 
-        #10000 rst = 1'b0;
+        clk = 1'b0;
+        for(i = 0; i < 1000; i++) begin
+            #0 $display("perf: Begin tick %8t", $time);
+            #0 clk = ~clk;
+            #1 $display("perf: End tick   %8t", $time);
+            #1 clk = ~clk;
+        end
         $finish;
     end
 endmodule
