@@ -45,9 +45,8 @@ module limn2600_SRAM(
     // Initialize RAM with ROM
     initial begin
         for(i = 0; i < 65535; i++) begin
-            ram[i] = 32'h0;
+            ram[i] = 0;
         end
-        $readmemh("rom.txt", rom);
-        rdy = 1'b0;
+        $readmemh("../rom.txt", rom);
     end
 endmodule

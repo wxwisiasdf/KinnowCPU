@@ -1,5 +1,13 @@
 #!/bin/sh
 rm system.o
-#verilator -O3 --top-module limn2600_System --cc rtl/system.v >log.txt || exit
-iverilog rtl/system.v -o system.o || exit
-vvp system.o >log.txt || exit
+verilator \
+    --top-module limn2600_System \
+    -O3 --cc --exe --build \
+    main.cpp \
+    rtl/system.v \
+    -CFLAGS "$(sdl2-config --cflags)" \
+    -LDFLAGS "$(sdl2-config --libs)" || exit
+
+cd obj_dir
+./Vlimn2600_System >log.txt
+cd ..

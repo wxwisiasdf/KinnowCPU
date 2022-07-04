@@ -30,11 +30,13 @@ module limn2600_cache
 
     reg [DATA_WIDTH - 1:0] inst_cache[0:NUM_ENTRIES];
 
-    always @(rst) begin
-        for(i = 0; i < NUM_ENTRIES; i++) begin
-            inst_cache[i] = 0;
+    always @(posedge clk) begin
+        if(rst) begin
+            for(i = 0; i < NUM_ENTRIES; i++) begin
+                inst_cache[i] = 0;
+            end
+            data_out <= 0;
         end
-        data_out <= 0;
     end
 
     always @(posedge clk) begin

@@ -149,8 +149,8 @@ module limn2600_Core
     reg [31:0] fetch_addr_queue[0:INSN_QUEUE_SIZE]; // ^ Address of
     reg [31:0] fetch_addr; // Address to fetch on, reset on JAL/J/BR
     wire [31:0] execute_inst = icache_data_out; // Instruction to execute
-    reg [3:0] fetch_inst_queue_num;
-    reg [3:0] execute_inst_queue_num;
+    reg [4:0] fetch_inst_queue_num;
+    reg [4:0] execute_inst_queue_num;
 
     // Branch prediction (fetcher stage)
     reg [3:0] regs_predict[0:31]; // Flags for the BP to tag registers
@@ -281,37 +281,29 @@ module limn2600_Core
         .data_out(icache_data_out)
     );
 
-    always @(rst) begin
-        pc <= 32'hFFFE0000;
-        state <= S_EXECUTE;
-        for(i = 0; i < 512; i++) begin
-            fetch_inst_queue[i] <= OP_TRULY_NOP;
-            fetch_addr_queue[i] <= 0;
-        end
-        fetch_inst_queue_num <= 0;
-        execute_inst_queue_num <= 0;
-        icache_addr_out <= 0;
-        icache_addr_in <= 0;
-        stall_execute <= 0;
-        stall_fetch <= 0;
-        fetch_addr <= 32'hFFFE0000;
-    end
-
-    always @(posedge irq) begin
-        $display("cpu: IRQ event!");
-        ctl_regs[CREG_EBADADDR] <= pc;
-        pc <= ctl_regs[CREG_EVEC];
-        ctl_regs[CREG_RS][31:28] <= ECAUSE_INTERRUPT;
-        if(state == S_HALT) begin
-            stall_fetch <= 1;
-            state <= S_BRANCHED;
-        end else begin
-            stall_fetch <= 1;
-            state <= S_BRANCHED;
-        end
-    end
-
     always @(posedge clk) begin
+        if(rst) begin
+            for(i = 0; i < INSN_QUEUE_SIZE; i++) begin
+                fetch_inst_queue[i] = OP_TRULY_NOP;
+                fetch_addr_queue[i] = 0;
+            end
+            pc <= 32'hFFFE0000;
+            state <= S_EXECUTE;
+            fetch_inst_queue_num <= 0;
+            execute_inst_queue_num <= 0;
+            icache_addr_out <= 0;
+            icache_addr_in <= 0;
+            stall_execute <= 0;
+            stall_fetch <= 0;
+            fetch_addr <= 32'hFFFE0000;
+        end else if(irq) begin
+            $display("cpu: IRQ event!");
+            ctl_regs[CREG_EBADADDR] <= pc;
+            pc <= ctl_regs[CREG_EVEC];
+            ctl_regs[CREG_RS][31:28] <= ECAUSE_INTERRUPT;
+            stall_fetch <= 1;
+            state <= S_BRANCHED;
+        end
         regs[0] <= 0;
         regs_predict[0] <= 0;
         write_value <= 0;
@@ -337,6 +329,9 @@ module limn2600_Core
                         end
                     OP_G1_MV_LONG: begin // 4-bytes, 1-per-cell
                         regs[read_regno] <= (data_in & 32'hFFFFFFFF);
+                        end
+                    default: begin
+                        // TODO: Raise exception for unknown size, or use this size for 8-bytes?
                         end
                     endcase
                     state <= S_EXECUTE;
@@ -374,6 +369,9 @@ module limn2600_Core
                             stall_fetch <= 1;
                             state <= S_BRANCHED;
                         end
+                        end
+                    default: begin
+                        // TODO: Raise exception for unknown size, or use this size for 8-bytes?
                         end
                     endcase
                     state <= S_WRITE;
@@ -426,22 +424,22 @@ module limn2600_Core
                     // BEQ ra, [imm21]
                     OP_BEQ: begin
                         if(f_imm21[20] == 1 || 1) begin
-                            if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 10'h0, f_imm21[19:0] } << 2);
-                            else fetch_addr <= fetch_addr - ({ 10'h0, f_imm21[19:0] } << 2);
+                            if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
+                            else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
                         end
                         end
                     // BNE ra, [imm21]
                     OP_BNE: begin
                         if(f_imm21[20] == 1 || 1) begin
-                            if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 10'h0, f_imm21[19:0] } << 2);
-                            else fetch_addr <= fetch_addr - ({ 10'h0, f_imm21[19:0] } << 2);
+                            if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
+                            else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
                         end
                         end
                     // BLT ra, [imm21]
                     OP_BLT: begin
                         if(f_imm21[20] == 1 || (regs_predict[f_opreg1] & RP_ZERO) == 1) begin
-                            if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 10'h0, f_imm21[19:0] } << 2);
-                            else fetch_addr <= fetch_addr - ({ 10'h0, f_imm21[19:0] } << 2);
+                            if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
+                            else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
                         end
                         end
                     // ADDI [rd], [rd], [imm16]
@@ -521,8 +519,8 @@ module limn2600_Core
                 if(fetch_addr_queue[execute_inst_queue_num - 1] != pc) begin
                     $display("cpu_branch_predict: Failed prediction (expected addr=0x%h, but pc=0x%h)", fetch_addr_queue[execute_inst_queue_num - 1], pc);
                     for(i = 0; i < 512; i++) begin // Reset fetching
-                        fetch_inst_queue[i] <= OP_TRULY_NOP;
-                        fetch_addr_queue[i] <= 32'b0;
+                        fetch_inst_queue[i] = OP_TRULY_NOP;
+                        fetch_addr_queue[i] = 0;
                     end
                     fetch_inst_queue_num <= 0;
                     execute_inst_queue_num <= 0;
@@ -567,8 +565,8 @@ module limn2600_Core
                     OP_BEQ: begin
                         $display("cpu: beq r%d,[%h]", opreg1, imm21);
                         if(regs[opreg1] == 32'h0) begin
-                            if(imm21[20] == 1) pc <= pc - ({ 10'h0, imm21[19:0] } << 2);
-                            else pc <= pc + ({ 10'h0, imm21[19:0] } << 2);
+                            if(imm21[20] == 1) pc <= pc - ({ 12'h0, imm21[19:0] } << 2);
+                            else pc <= pc + ({ 12'h0, imm21[19:0] } << 2);
                         end else begin
                             pc <= pc + 4;
                         end
@@ -579,8 +577,8 @@ module limn2600_Core
                     OP_BNE: begin
                         $display("cpu: bne r%d,[%h]", opreg1, imm21);
                         if(regs[opreg1] != 32'h0) begin
-                            if(imm21[20] == 1) pc <= pc - ({ 10'h0, imm21[19:0] } << 2);
-                            else pc <= pc + ({ 10'h0, imm21[19:0] } << 2);
+                            if(imm21[20] == 1) pc <= pc - ({ 12'h0, imm21[19:0] } << 2);
+                            else pc <= pc + ({ 12'h0, imm21[19:0] } << 2);
                         end else begin
                             pc <= pc + 4;
                         end
@@ -591,8 +589,8 @@ module limn2600_Core
                     OP_BLT: begin
                         $display("cpu: blt r%d,[%h]", opreg1, imm21);
                         if(regs[opreg1][31] == 0) begin
-                            if(imm21[20] == 1) pc <= pc - ({ 10'h0, imm21[19:0] } << 2);
-                            else pc <= pc + ({ 10'h0, imm21[19:0] } << 2);
+                            if(imm21[20] == 1) pc <= pc - ({ 12'h0, imm21[19:0] } << 2);
+                            else pc <= pc + ({ 12'h0, imm21[19:0] } << 2);
                         end else begin
                             pc <= pc + 4;
                         end
@@ -856,6 +854,7 @@ module limn2600_CPU(
     limn2600_Core core1(
         .rst(rst),
         .clk(clk),
+        .irq(irq),
         .addr(addr),
         .data_in(data_in),
         .data_out(data_out),

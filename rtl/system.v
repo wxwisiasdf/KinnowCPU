@@ -9,10 +9,12 @@
 // Limn2600 System
 //
 ///////////////////////////////////////////////////////////////////////////////
-module limn2600_System;
+module limn2600_System
+(
+    input rst,
+    input clk
+);
     integer i;
-    reg rst;
-    reg clk;
     wire we;
     wire [31:0] addr;
     wire [31:0] data_from_cpu;
@@ -47,6 +49,7 @@ module limn2600_System;
     initial begin
         $display("Limn2600 Verilog SoC!");
 
+/*
         // "Press" reset button
         #0 rst = 1'b1;
         #1 rst = 1'b0;
@@ -59,5 +62,6 @@ module limn2600_System;
             #1 clk = ~clk;
         end
         $finish;
+*/
     end
 endmodule
