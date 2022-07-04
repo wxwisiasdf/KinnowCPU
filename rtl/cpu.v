@@ -312,9 +312,9 @@ module limn2600_Core
     end
 
     always @(posedge clk) begin
-        regs[0] <= 32'h0;
+        regs[0] <= 0;
         regs_predict[0] <= 0;
-        write_value <= 32'h0;
+        write_value <= 0;
     end
 
     // Fetch
@@ -361,7 +361,7 @@ module limn2600_Core
                         write_value <= (data_in & ~(32'hFFFF << ((rw_addr % 4) * 8))) | ((write_value & 32'hFFFF) << ((rw_addr % 4) * 8));
                         end
                     OP_G1_MV_LONG: begin // 4-bytes, 1-per-cell
-                        if((rw_addr & 32'd3) == 0) begin // Aligned access
+                        if((rw_addr & 3) == 0) begin // Aligned access
                             we <= 1;
                             data_out <= write_value;
                             state <= S_EXECUTE;
