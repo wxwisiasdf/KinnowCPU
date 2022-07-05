@@ -25,6 +25,8 @@ module limn2600_SRAM
     integer i;
 
     always @(posedge clk) begin
+        data_out <= 0;
+        rdy <= 0;
         if(cs) begin
             if(we) begin
                 if(addr == 32'hF8000040) begin
@@ -35,23 +37,21 @@ module limn2600_SRAM
                 end else begin
                     $display("%m: write [shadow] data_in=0x%8h=>addr=0x%8h", data_in, addr);
                 end
+                rdy <= 1;
             end else begin
                 if(addr == 32'hF8000040) begin
-                    $display("%m: serial_emul READ <%b>", data_in);
-                end else if(addr[31:16] == 16'h0000) begin
+                    $display("%m: serial_emul READ <%b>", data_out);
+                end else if(addr[31:16] == 16'h0000 || addr[31:16] == 16'h0000) begin
                     data_out <= ram[addr[14:0] >> 2];
                     $display("%m: ram_read data_out=0x%8h=>addr=0x%8h", data_out, addr);
                 end else if(addr[31:16] == 16'hFFFE) begin
                     data_out <= rom[addr[14:0] >> 2];
                     $display("%m: rom_read [shadow] data_out=0x%8h=>addr=0x%8h", data_out, addr);
                 end else begin
-                    data_out <= 0;
                     $display("%m: read [shadow] data_in=0x%8h=>addr=0x%8h", data_in, addr);
                 end
+                rdy <= 1;
             end
-            rdy <= 1;
-        end else begin
-            rdy <= 0;
         end
     end
 
