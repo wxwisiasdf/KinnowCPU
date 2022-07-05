@@ -255,7 +255,7 @@ module limn2600_Core
             cs <= 1;
             if(rdy) begin // Appropriately apply masks
                 // Check docs/isa.txt "Shortcuts - Trans size" for an explanation
-                $display("%m: Read size=%0d,mask=0x%h", (1 << (~trans_size)) * 8, (1 << ((1 << (~trans_size)) * 8)) - 1);
+                $display("%m: Read size=%0d,mask=0x%h,shift=%0d,f_data=0x%h", (1 << (~trans_size)) * 8, (1 << ((1 << (~trans_size)) * 8)) - 1, (memio_addr & ((1 << (~trans_size)) - 1)) * ((1 << (~trans_size)) * 8), data_in & ((1 << ((1 << (~trans_size)) * 8)) - 1));
                 regs[read_regno] <= (data_in & ((1 << ((1 << (~trans_size)) * 8)) - 1)) << ((memio_addr & ((1 << (~trans_size)) - 1)) * ((1 << (~trans_size)) * 8));
                 state <= S_EXECUTE;
             end
@@ -269,6 +269,7 @@ module limn2600_Core
             $display("%m: S_PREWRITE");
             cs <= 1;
             if(rdy) begin
+                we <= 1; // Enable since there is some delay
                 // Appropriately apply masks
                 if((memio_addr & 3) == 0) begin // Aligned access
                     if(trans_size == 2'b00) begin // 4-bytes, 1-per-cell
@@ -323,6 +324,7 @@ module limn2600_Core
         end else if(state == S_EXECUTE) begin
             $display("%m: Execution icache_data_out=0x%h,inst=0x%h,pc=0x%h", icache_data_out, execute_inst, pc);
             state <= S_FETCH;
+            pc <= pc + 4; // By default advance one instruction, can of course be overriden because this is combinatorial ;)
             casez(inst_lo)
                 // This is an invalid opcode, but used internally as a "true no-op", no PC is modified
                 // no anything is modified, good for continuing the executor without stalling
@@ -332,10 +334,11 @@ module limn2600_Core
                 // nothing bad happens from this!
                 6'b00_0000: begin
                     $display("%m: tnop");
+                    pc <= pc; // No change on PC
                     end
                 // JALR [rd], [ra], [imm29]
                 6'b11_1000: begin
-                    $display("%m: jalr r%d,r%d,[%h]", opreg1, opreg2, { 8'h0, imm16 } << 2);
+                    $display("%m: jalr r%0d,r%0d,[%h]", opreg1, opreg2, { 8'h0, imm16 } << 2);
                     regs[opreg1] <= pc + 4;
                     pc <= regs[opreg2] + ({ 16'h0, imm16 } << 2); // TODO: Sign extend
                     state <= S_BRANCHED;
@@ -353,14 +356,12 @@ module limn2600_Core
                     if(regs[opreg1] == 32'h0) begin
                         $display("%m: Branch taken!");
                         if(imm21[20] == 1) begin
-                            $display("%m: beq r%d,[-%0d]", opreg1, ~imm21[19:0]);
+                            $display("%m: beq r%0d,[-%0d]", opreg1, ~imm21[19:0]);
                             pc <= pc - ({ 12'h0, ~imm21[19:0] } << 2);
                         end else begin
-                            $display("%m: beq r%d,[%0d]", opreg1, imm21[19:0]);
+                            $display("%m: beq r%0d,[%0d]", opreg1, imm21[19:0]);
                             pc <= pc + ({ 12'h0, imm21[19:0] } << 2);
                         end
-                    end else begin
-                        pc <= pc + 4;
                     end
                     state <= S_BRANCHED;
                     end
@@ -369,14 +370,12 @@ module limn2600_Core
                     if(regs[opreg1] != 32'h0) begin
                         $display("%m: Branch taken!");
                         if(imm21[20] == 1) begin
-                            $display("%m: bne r%d,[-%0d]", opreg1, ~imm21[19:0]);
+                            $display("%m: bne r%0d,[-%0d]", opreg1, ~imm21[19:0]);
                             pc <= pc - ({ 12'h0, ~imm21[19:0] } << 2);
                         end else begin
-                            $display("%m: bne r%d,[%0d]", opreg1, imm21[19:0]);
+                            $display("%m: bne r%0d,[%0d]", opreg1, imm21[19:0]);
                             pc <= pc + ({ 12'h0, imm21[19:0] } << 2);
                         end
-                    end else begin
-                        pc <= pc + 4;
                     end
                     state <= S_BRANCHED;
                     end
@@ -386,14 +385,12 @@ module limn2600_Core
                     if(regs[opreg1][31] == 1) begin
                         $display("%m: Branch taken!");
                         if(imm21[20] == 1) begin
-                            $display("%m: blt r%d,[-%0d]", opreg1, ~imm21[19:0]);
+                            $display("%m: blt r%0d,[-%0d]", opreg1, ~imm21[19:0]);
                             pc <= pc - ({ 12'h0, ~imm21[19:0] } << 2);
                         end else begin
-                            $display("%m: blt r%d,[%0d]", opreg1, imm21[19:0]);
+                            $display("%m: blt r%0d,[%0d]", opreg1, imm21[19:0]);
                             pc <= pc + ({ 12'h0, imm21[19:0] } << 2);
                         end
-                    end else begin
-                        pc <= pc + 4;
                     end
                     state <= S_BRANCHED;
                     end
@@ -406,44 +403,41 @@ module limn2600_Core
                 // ORI [rd], [rd], [imm16]
                 // LUI [rd], [rd], [imm16]
                 6'b??_?100: begin
-                    $display("%m: imm_alu_inst r%d,r%d,[0x%h]", opreg1, opreg2, imm16);
+                    $display("%m: imm_alu_inst r%0d,r%0d,[0x%h]", opreg1, opreg2, imm16);
                     if(inst_lo[5:3] == 0) begin // LUI
-                        $display("%m: lui r%d,r%d,[0x%h]", opreg1, opreg2, imm16);
+                        $display("%m: lui r%0d,r%0d,[0x%h]", opreg1, opreg2, imm16);
                         regs[opreg1] <= regs[opreg2] | ({ 16'b0, imm16 } << 16);
                         // TODO: Fuse OPS for example LA comes as LUI+ORI
                     end else begin // Rest of ops
                         regs[opreg1] <= alu_op_result(inst_lo[5:3], regs[opreg2], { 16'b0, imm16 });
                     end
-                    pc <= pc + 4;
                     end
                 6'b1?_?011: begin // MOV rd, [rs + imm16]
-                    $display("%m: mov(5)(R) [r%d+%h],[%d],sz=%b", opreg1, { 8'h0, imm16 }, imm5, inst_lo[4:3]);
+                    $display("%m: mov(5)(R) r%0d,[r%0d+%h],sz=%b", opreg1, opreg2, { 8'h0, imm16 }, inst_lo[4:3]);
                     trans_size <= inst_lo[4:3];
                     read_regno <= opreg1;
                     memio_addr <= regs[opreg2] + { 16'h0, imm16 << (~trans_size) };
                     addr <= regs[opreg2] + { 16'h0, imm16 << (~trans_size) };
-                    state <= S_PREWRITE;
+                    state <= S_READ;
                     cs <= 1;
-                    pc <= pc + 4;
                     end
                 6'b??_?010: begin // MOV [ra + imm16], rb
                     trans_size <= inst_lo[4:3];
                     if(inst_lo[5] == 1) begin // Move register to memory
-                        $display("%m: mov(16)(W) [r%d+%h],r%d,sz=%b", opreg1, { 16'h0, imm16 }, opreg2, inst_lo[4:3]);
+                        $display("%m: mov(16)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 }, opreg2, inst_lo[4:3]);
                         write_value <= regs[opreg2];
                     end else begin // Move immediate to memory
-                        $display("%m: mov(5)(W) [r%d+%h],r%d,sz=%b", opreg1, { 16'h0, imm16 }, opreg2, inst_lo[4:3]);
+                        $display("%m: mov(5)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 }, opreg2, inst_lo[4:3]);
                         write_value <= { 27'h0, imm5 };
                     end
                     memio_addr <= regs[opreg1] + { 16'h0, imm16 << (~trans_size) };
                     addr <= regs[opreg1] + { 16'h0, imm16 << (~trans_size) };
                     state <= S_PREWRITE;
                     cs <= 1;
-                    pc <= pc + 4;
                     end
                 // Instructions starting with 111001
                 6'b11_1001: begin
-                    $display("%m: alu_inst r%d,r%d,r%d,instmode=%b,op=%b", opreg1, opreg2, opreg3, opg1_instmode, inst_hi);
+                    $display("%m: alu_inst r%0d,r%0d,r%0d,instmode=%b,op=%b", opreg1, opreg2, opreg3, opg1_instmode, inst_hi);
                     // Instmode
                     casez(opg1_instmode)
                         2'b00: tmp32 <= regs[opreg3] >> { 26'h0, imm5};
@@ -459,7 +453,7 @@ module limn2600_Core
                             regs[opreg1] <= ~(regs[opreg2] | tmp32);
                             end
                         4'b11??: begin // Move-From-Registers
-                            $display("%m: mov(W)(REG) [r%d+r%d+%d],r%d,sz=%b", opreg2, opreg3, imm5, opreg1, inst_hi[3:2]);
+                            $display("%m: mov(W)(REG) [r%0d+r%0d+%d],r%0d,sz=%b", opreg2, opreg3, imm5, opreg1, inst_hi[3:2]);
                             trans_size <= inst_hi[3:2];
                             write_value <= regs[opreg1];
                             memio_addr <= regs[opreg2] + tmp32;
@@ -468,7 +462,7 @@ module limn2600_Core
                             cs <= 1;
                             end
                         4'b10??: begin // Move-To-Register
-                            $display("%m: mov(R)(REG) r%d,[r%d+r%d+%d],sz=%b", opreg1, opreg2, opreg3, imm5, inst_hi[3:2]);
+                            $display("%m: mov(R)(REG) r%0d,[r%0d+r%0d+%d],sz=%b", opreg1, opreg2, opreg3, imm5, inst_hi[3:2]);
                             trans_size <= inst_hi[3:2];
                             read_regno <= opreg1;
                             memio_addr <= regs[opreg2] + tmp32;
@@ -480,27 +474,23 @@ module limn2600_Core
                             regs[opreg1] <= alu_op_result(inst_hi[4:2], regs[opreg2], tmp32);
                             end
                     endcase
-                    pc <= pc + 4;
                     end
                 6'b10_1001: begin
                     $display("%m: privileged_inst");
                     casez(inst_hi[5:2])
                     // MFCR [opreg1] [opreg3]
                     4'b1111: begin
-                        $display("%m: mfcr r%d,cr%d", opreg1, opreg3);
+                        $display("%m: mfcr r%0d,cr%0d", opreg1, opreg3);
                         regs[opreg1] <= ctl_regs[opreg3];
-                        pc <= pc + 4;
                         end
                     // MTCR [opreg3] [opreg2]
                     4'b1110: begin
-                        $display("%m: mtcr cr%d,r%d", opreg3, opreg2);
+                        $display("%m: mtcr cr%0d,r%0d", opreg3, opreg2);
                         ctl_regs[opreg3] <= regs[opreg2];
-                        pc <= pc + 4;
                         end
                     // CACHEI [imm22]
                     4'b1000: begin
                         $display("%m: cachei [%h]", imm22);
-                        pc <= pc + 4;
                         end
                     // FWC [imm22]
                     4'b1010: begin
@@ -511,7 +501,6 @@ module limn2600_Core
                     // HLT [imm22]
                     4'b1100: begin
                         $display("%m: hlt [%h]", imm22);
-                        pc <= pc + 4;
                         state <= S_HALT;
                         end
                     default: begin // Invalid instruction
@@ -543,7 +532,6 @@ module limn2600_Core
                                 state <= S_BRANCHED;
                             end else begin
                                 regs[opreg1] <= regs[opreg2] / regs[opreg3];
-                                pc <= pc + 4;
                             end
                             end
                         4'b1100: begin
@@ -557,12 +545,10 @@ module limn2600_Core
                             end else begin
                                 // TODO: Properly perform signed division
                                 regs[opreg1] <= { (regs[opreg2][31] | regs[opreg3][31]), regs[opreg2][30:0] / regs[opreg3][30:0] };
-                                pc <= pc + 4;
                             end
                             end
                         4'b1001: begin
                             // TODO: Is this a memory access?
-                            pc <= pc + 4;
                             end
                         4'b1011: begin
                             if(opreg4 != 5'b0) begin
@@ -574,7 +560,6 @@ module limn2600_Core
                                 state <= S_BRANCHED;
                             end else begin
                                 regs[opreg1] <= regs[opreg2] % regs[opreg3];
-                                pc <= pc + 4;
                             end
                             end
                         4'b1111: begin
@@ -587,12 +572,10 @@ module limn2600_Core
                                 state <= S_BRANCHED;
                             end else begin
                                 regs[opreg1] <= regs[opreg2] * regs[opreg3];
-                                pc <= pc + 4;
                             end
                             end
                         4'b1000: begin
                             // TODO: Is this a memory access?
-                            pc <= pc + 4;
                             end
                         4'b0000: begin
                             $display("%m: sys [%h]", imm22);

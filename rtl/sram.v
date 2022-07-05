@@ -7,7 +7,7 @@ module limn2600_SRAM
 #( // Parameter
     parameter DATA_WIDTH = 32,
     parameter ROM_SIZE = 32768,
-    parameter RAM_SIZE = 32768
+    parameter RAM_SIZE = 65535
 )
 ( // Interface
     input rst,
@@ -31,24 +31,22 @@ module limn2600_SRAM
             if(we) begin
                 if(addr == 32'hF8000040) begin
                     $display("%m: serial_emul WRITE <%b>", data_in);
-                end else if(addr[31:16] == 16'h0000) begin
-                    ram[addr[14:0] >> 2] <= data_in;
-                    $display("%m: ram_write data_in=0x%8h=>addr=0x%8h", data_in, addr);
+                end else if(addr[31:16] == 16'hFFFE) begin
+                    $display("%m: ROM_write [shadow] data_in=0x%8h=>addr=0x%8h", data_in, addr);
                 end else begin
-                    $display("%m: write [shadow] data_in=0x%8h=>addr=0x%8h", data_in, addr);
+                    ram[addr[17:2]] <= data_in;
+                    $display("%m: SRAM_write data_out=0x%8h=>addr=0x%8h", data_out, addr);
                 end
                 rdy <= 1;
             end else begin
                 if(addr == 32'hF8000040) begin
                     $display("%m: serial_emul READ <%b>", data_out);
-                end else if(addr[31:16] == 16'h0000 || addr[31:16] == 16'h0000) begin
-                    data_out <= ram[addr[14:0] >> 2];
-                    $display("%m: ram_read data_out=0x%8h=>addr=0x%8h", data_out, addr);
                 end else if(addr[31:16] == 16'hFFFE) begin
-                    data_out <= rom[addr[14:0] >> 2];
-                    $display("%m: rom_read [shadow] data_out=0x%8h=>addr=0x%8h", data_out, addr);
+                    data_out <= rom[addr[16:2]];
+                    $display("%m: SROM_read [shadow] data_out=0x%8h=>addr=0x%8h", data_out, addr);
                 end else begin
-                    $display("%m: read [shadow] data_in=0x%8h=>addr=0x%8h", data_in, addr);
+                    data_out <= ram[addr[17:2]];
+                    $display("%m: SRAM_read data_out=0x%8h=>addr=0x%8h", data_out, addr);
                 end
                 rdy <= 1;
             end
