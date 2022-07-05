@@ -232,7 +232,7 @@ module limn2600_Core
             we <= 0;
             icache_we <= 0;
         end else if(irq) begin
-            $display("%m: IRQ event!");
+            $display("%m: exception IRQ event!");
             ctl_regs[CREG_EBADADDR] <= pc;
             pc <= ctl_regs[CREG_EVEC];
             ctl_regs[CREG_RS][31:28] <= ECAUSE_INTERRUPT;
@@ -271,7 +271,7 @@ module limn2600_Core
             if(rdy) begin
                 we <= 1; // Enable since there is some delay
                 // Appropriately apply masks
-                if((memio_addr & 3) == 0) begin // Aligned access
+                if(1) begin // Aligned access
                     if(trans_size == 2'b00) begin // 4-bytes, 1-per-cell
                         $display("%m: prewrite long");
                         we <= 1; // Since data_width == 32 we simply send the whole thing
@@ -282,7 +282,7 @@ module limn2600_Core
                         write_value <= memio_aligned_write_mask(trans_size, memio_addr, data_in, write_value);
                     end
                 end else begin // Unaligned access
-                    $display("%m: unaligned write!");
+                    $display("%m: exception unaligned write!");
                     ctl_regs[CREG_EBADADDR] <= pc;
                     pc <= ctl_regs[CREG_EVEC];
                     ctl_regs[CREG_RS][31:28] <= ECAUSE_UNALIGNED;
@@ -413,25 +413,27 @@ module limn2600_Core
                     end
                     end
                 6'b1?_?011: begin // MOV rd, [rs + imm16]
-                    $display("%m: mov(5)(R) r%0d,[r%0d+%h],sz=%b", opreg1, opreg2, { 8'h0, imm16 }, inst_lo[4:3]);
+                    $display("%m: mov(5)(R) r%0d,[r%0d+%h],sz=%b", opreg1, opreg2, { 8'h0, imm16 }, trans_size);
                     trans_size <= inst_lo[4:3];
                     read_regno <= opreg1;
-                    memio_addr <= regs[opreg2] + { 16'h0, imm16 << (~trans_size) };
-                    addr <= regs[opreg2] + { 16'h0, imm16 << (~trans_size) };
+                    memio_addr <= regs[opreg2] + ({ 16'h0, imm16} << (~trans_size));
+                    addr <= regs[opreg2] + ({ 16'h0, imm16 } << (~trans_size));
                     state <= S_READ;
                     cs <= 1;
                     end
                 6'b??_?010: begin // MOV [ra + imm16], rb
                     trans_size <= inst_lo[4:3];
                     if(inst_lo[5] == 1) begin // Move register to memory
-                        $display("%m: mov(16)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 }, opreg2, inst_lo[4:3]);
+                        $display("%m: mov(16)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 } << (~trans_size), opreg2, trans_size);
                         write_value <= regs[opreg2];
+                        data_out <= regs[opreg2];
                     end else begin // Move immediate to memory
-                        $display("%m: mov(5)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 }, opreg2, inst_lo[4:3]);
+                        $display("%m: mov(5)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 } << (~trans_size), opreg2, trans_size);
                         write_value <= { 27'h0, imm5 };
+                        data_out <= { 27'h0, imm5 };
                     end
-                    memio_addr <= regs[opreg1] + { 16'h0, imm16 << (~trans_size) };
-                    addr <= regs[opreg1] + { 16'h0, imm16 << (~trans_size) };
+                    memio_addr <= regs[opreg1] + ({ 16'h0, imm16} << (~trans_size));
+                    addr <= regs[opreg1] + ({ 16'h0, imm16 } << (~trans_size));
                     state <= S_PREWRITE;
                     cs <= 1;
                     end
@@ -456,8 +458,9 @@ module limn2600_Core
                             $display("%m: mov(W)(REG) [r%0d+r%0d+%d],r%0d,sz=%b", opreg2, opreg3, imm5, opreg1, inst_hi[3:2]);
                             trans_size <= inst_hi[3:2];
                             write_value <= regs[opreg1];
-                            memio_addr <= regs[opreg2] + tmp32;
-                            addr <= regs[opreg2] + tmp32;
+                            data_out <= regs[opreg1];
+                            memio_addr <= regs[opreg2] + (tmp32 << (~trans_size));
+                            addr <= regs[opreg2] + (tmp32 << (~trans_size));
                             state <= S_PREWRITE;
                             cs <= 1;
                             end
@@ -465,8 +468,8 @@ module limn2600_Core
                             $display("%m: mov(R)(REG) r%0d,[r%0d+r%0d+%d],sz=%b", opreg1, opreg2, opreg3, imm5, inst_hi[3:2]);
                             trans_size <= inst_hi[3:2];
                             read_regno <= opreg1;
-                            memio_addr <= regs[opreg2] + tmp32;
-                            addr <= regs[opreg2] + tmp32;
+                            memio_addr <= regs[opreg2] + (tmp32 << (~trans_size));
+                            addr <= regs[opreg2] + (tmp32 << (~trans_size));
                             state <= S_READ;
                             cs <= 1;
                             end
@@ -494,6 +497,7 @@ module limn2600_Core
                         end
                     // FWC [imm22]
                     4'b1010: begin
+                        $display("%m: exception firmware");
                         ctl_regs[CREG_EBADADDR] <= pc;
                         pc <= ctl_regs[CREG_FWVEC];
                         ctl_regs[CREG_RS][31:28] <= ECAUSE_SYSCALL;
@@ -504,7 +508,7 @@ module limn2600_Core
                         state <= S_HALT;
                         end
                     default: begin // Invalid instruction
-                        $display("%m: invalid_grp2=0b%b", inst_hi[5:2]);
+                        $display("%m: exception invalid_grp2=0b%b", inst_hi[5:2]);
                         ctl_regs[CREG_EBADADDR] <= pc;
                         pc <= ctl_regs[CREG_EVEC];
                         ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
@@ -515,7 +519,7 @@ module limn2600_Core
                     $display("%m: advanced_cohost_alu");
                     casez(inst_hi[5:2])
                         4'b0001: begin
-                            $display("%m: brk [%h]", imm22);
+                            $display("%m: exception brk [%h]", imm22);
                             // TODO: Is imm22 used at all?
                             ctl_regs[CREG_EBADADDR] <= pc;
                             pc <= ctl_regs[CREG_EVEC];
@@ -525,7 +529,7 @@ module limn2600_Core
                         4'b1101: begin
                             if(opreg4 != 5'b0) begin
                                 // Raise UD
-                                $display("%m: exception - invalid div inst=%b", execute_inst);
+                                $display("%m: exception invalid div inst=%b", execute_inst);
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
@@ -537,7 +541,7 @@ module limn2600_Core
                         4'b1100: begin
                             if(opreg4 != 5'b0) begin
                                 // Raise UD
-                                $display("%m: exception - invalid divs inst=%b", execute_inst);
+                                $display("%m: exception invalid divs inst=%b", execute_inst);
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
@@ -553,7 +557,7 @@ module limn2600_Core
                         4'b1011: begin
                             if(opreg4 != 5'b0) begin
                                 // Raise UD
-                                $display("%m: exception - invalid mod inst=%b", execute_inst);
+                                $display("%m: exception invalid mod inst=%b", execute_inst);
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
@@ -565,7 +569,7 @@ module limn2600_Core
                         4'b1111: begin
                             if(opreg4 != 5'b0) begin
                                 // Raise UD
-                                $display("%m: exception - invalid mul inst=%b", execute_inst);
+                                $display("%m: exception invalid mul inst=%b", execute_inst);
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
@@ -578,7 +582,7 @@ module limn2600_Core
                             // TODO: Is this a memory access?
                             end
                         4'b0000: begin
-                            $display("%m: sys [%h]", imm22);
+                            $display("%m: exception sys [%h]", imm22);
                             // TODO: Is imm22 used at all?
                             ctl_regs[CREG_EBADADDR] <= pc;
                             pc <= ctl_regs[CREG_EVEC];
@@ -590,7 +594,7 @@ module limn2600_Core
                     endcase
                     end
                 default: begin
-                    $display("%m: invalid_opcode,inst=%b", execute_inst);
+                    $display("%m: exception invalid_opcode,inst=%b", execute_inst);
                     ctl_regs[CREG_EBADADDR] <= pc;
                     pc <= ctl_regs[CREG_EVEC];
                     ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
