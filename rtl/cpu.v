@@ -61,9 +61,6 @@ endmodule
 //
 ///////////////////////////////////////////////////////////////////////////////
 module limn2600_Core
-#( // Parameter
-    parameter INSN_QUEUE_SIZE = 16
-)
 ( // Interface
     input rst,
     input clk,
@@ -122,12 +119,37 @@ module limn2600_Core
         endcase
     endfunction
 
+    // Do the required masking for reading and writing back RAM values
+    // Assumes address if already aligned to the 32-bit boundary
+    function [31:0] memio_aligned_write_mask(
+        input [1:0] size, // Bits from the MOV instruction
+        input [31:0] addr, // Address of write
+        input [31:0] ramdata, // Data of the RAM
+        input [31:0] data // Data to write
+    );
+        casez(size)
+            2'b11: begin // 1-bytes, 4-per-cell
+                $display("%m: prewrite byte");
+                memio_aligned_write_mask = (ramdata & ~(32'hFF << ((addr % 4) * 8))) | ((data & 32'hFF) << ((addr % 4) * 8));
+                end
+            2'b10: begin // 2-bytes, 2-per-cell
+                $display("%m: prewrite int");
+                memio_aligned_write_mask = (ramdata & ~(32'hFFFF << ((addr % 4) * 8))) | ((data & 32'hFFFF) << ((addr % 4) * 8));
+                end
+            2'b0?: begin // 4-bytes, 1-per-cell
+                $display("%m: prewrite long");
+                memio_aligned_write_mask = ramdata;
+                end
+        endcase
+    endfunction
+
     // State
     reg [31:0] tmp32; // Temporal value
     reg [31:0] regs[0:31]; // Limnstation has 32 registers
     reg [31:0] ctl_regs[0:31];
     reg [31:0] pc; // Program counter
     reg [2:0] state;
+
     reg took_branch; // Whetever a branch was taken (state)
 
     // I/O machine
@@ -145,12 +167,9 @@ module limn2600_Core
     localparam S_BRANCHED = 6;
     
     // Instruction fetcher
-    reg stall_fetch;
-    reg fetch_addr_queue[0:INSN_QUEUE_SIZE - 1]; // Whetever this instruction takes a branch
+    reg stall_sramio;
     reg [31:0] fetch_addr; // Address to fetch on, reset on JAL/J/BR
     wire [31:0] execute_inst = icache_data_out; // Instruction to execute
-    reg [3:0] fetch_inst_queue_num;
-    reg [3:0] execute_inst_queue_num;
 
     // Branch prediction (fetcher stage)
     reg [3:0] regs_predict[0:31]; // Flags for the BP to tag registers
@@ -160,7 +179,7 @@ module limn2600_Core
         RP_UNSPEC_MEM = 4'b0010; // Register depends on memory value
 
     // Instruction executor
-    reg stall_execute;
+    reg stall_exec;
     wire [28:0] f_imm29 = data_in[31:3];
     wire [22:0] f_imm21 = data_in[31:9];
     wire [21:0] f_imm22 = data_in[27:6]; // BRK and SYS
@@ -282,23 +301,18 @@ module limn2600_Core
     always @(posedge clk) begin
         if(rst) begin
             $display("%m: Reset");
-            for(i = 0; i < INSN_QUEUE_SIZE; i++) begin
-                fetch_addr_queue[i] = 0;
-            end
             pc <= 32'hFFFE0000;
             state <= S_EXECUTE;
-            fetch_inst_queue_num <= 0;
-            execute_inst_queue_num <= 0;
             icache_addr_in <= 0;
-            stall_execute <= 0;
-            stall_fetch <= 0;
+            stall_sramio <= 0;
+            stall_exec <= 0;
             fetch_addr <= 32'hFFFE0000;
         end else if(irq) begin
             $display("%m: IRQ event!");
             ctl_regs[CREG_EBADADDR] <= pc;
             pc <= ctl_regs[CREG_EVEC];
             ctl_regs[CREG_RS][31:28] <= ECAUSE_INTERRUPT;
-            stall_fetch <= 1;
+            stall_sramio <= 1;
             state <= S_BRANCHED;
         end
         regs[0] <= 0;
@@ -307,13 +321,12 @@ module limn2600_Core
 
     // Fetch
     always @(posedge clk) begin
-        cs <= 1;
-        addr <= rw_addr;
-        if(stall_fetch) begin
-            $display("%m: (Fetch) Stalled!");
+        if(!stall_sramio) begin
+            cs <= 1;
+            addr <= rw_addr;
+            // Read a from the SRAM (1/1 cycles)
             if(state == S_READ) begin
                 $display("%m: S_READ");
-                stall_fetch <= 1;
                 we <= 0; // Read value and emplace on register
                 if(rdy) begin // Appropriately apply masks
                     casez(trans_size)
@@ -331,220 +344,188 @@ module limn2600_Core
                         end
                     endcase
                     state <= S_EXECUTE;
-                    stall_fetch <= 0;
+                    stall_sramio <= 0;
                 end
             // Fetch the element from SRAM with 32-bits per unit of data
             // rememeber that we also need to write bytes so unaligned accesses
-            // are allowed by the CPU because fuck you
+            // are allowed by the CPU because fuck you (1/2 cycles)
             end else if(state == S_PREWRITE) begin
                 // Prewrite is in charge of reading the value and then writting it back with the desired offset
                 // so we can support unaligned accesses
                 $display("%m: S_PREWRITE");
-                stall_fetch <= 1;
                 we <= 0; // Read the value first
                 if(rdy) begin
                     // Appropriately apply masks
-                    casez(trans_size)
-                    OP_G1_MV_BYTE: begin // 1-bytes, 4-per-cell
-                        write_value <= (data_in & ~(32'hFF << ((rw_addr % 4) * 8))) | ((write_value & 32'hFF) << ((rw_addr % 4) * 8));
-                        end
-                    OP_G1_MV_INT: begin // 2-bytes, 2-per-cell
-                        write_value <= (data_in & ~(32'hFFFF << ((rw_addr % 4) * 8))) | ((write_value & 32'hFFFF) << ((rw_addr % 4) * 8));
-                        end
-                    OP_G1_MV_LONG: begin // 4-bytes, 1-per-cell
-                        if((rw_addr & 3) == 0) begin // Aligned access
-                            we <= 1;
+                    if((rw_addr & 3) == 0) begin // Aligned access
+                        if(trans_size == 2'b00) begin // 4-bytes, 1-per-cell
+                            $display("%m: prewrite long");
+                            we <= 1; // Since data_width == 32 we simply send the whole thing
                             data_out <= write_value;
                             state <= S_EXECUTE;
-                            stall_fetch <= 0;
-                        end else begin // Unaligned access
-                            $display("%m: unaligned write of long!");
-                            ctl_regs[CREG_EBADADDR] <= pc;
-                            pc <= ctl_regs[CREG_EVEC];
-                            ctl_regs[CREG_RS][31:28] <= ECAUSE_UNALIGNED;
-                            stall_fetch <= 1;
-                            state <= S_BRANCHED;
+                            stall_sramio <= 0;
+                        end else begin
+                            write_value <= memio_aligned_write_mask(trans_size, rw_addr, data_in, write_value);
                         end
-                        end
-                    default: begin
-                        // TODO: Raise exception for unknown size, or use this size for 8-bytes?
-                        end
-                    endcase
+                    end else begin // Unaligned access
+                        $display("%m: unaligned write!");
+                        ctl_regs[CREG_EBADADDR] <= pc;
+                        pc <= ctl_regs[CREG_EVEC];
+                        ctl_regs[CREG_RS][31:28] <= ECAUSE_UNALIGNED;
+                        state <= S_BRANCHED;
+                    end
                     state <= S_WRITE;
                     $display("%m: write_value=0x%h,rw_addr=0x%h,data_in=0x%h", write_value, rw_addr, data_in);
                 end
+            // After fetching the value and appropriately setting the masks
+            // send it to the SRAM (2/2 cycles)
             end else if(state == S_WRITE) begin
                 $display("%m: S_WRITE");
-                stall_fetch <= 1;
                 we <= 1; // Write the value, then return to fetching
                 data_out <= write_value;
                 if(rdy) begin
                     $display("%m: data_out=0x%h,write_value=0x%h,addr=0x%h", data_out, write_value, addr);
                     state <= S_EXECUTE;
-                    stall_fetch <= 0;
+                    stall_sramio <= 0;
                 end
-            end
-        end else begin
-            $display("%m: (Fetch) Fetching,num=%d", fetch_inst_queue_num);
-            addr <= fetch_addr;
-            we <= 0; // Read from memory
-            icache_we <= 0;
-            icache_addr_in <= fetch_addr;
-            // Once we can fetch instructions we save the state, but only if
-            // we aren't overwriting something being used by the executor!
-            if(rdy && fetch_inst_queue_num != execute_inst_queue_num) begin
-                $display("%m: (Fetch) Fetched inst=%b,fetch-num=%d,exec-num=%d,fetch=0x%h", data_in, fetch_inst_queue_num, execute_inst_queue_num, fetch_addr);
-                icache_we <= 1; // Send the fetched instruction onto the i-cache
-                fetch_addr_queue[fetch_inst_queue_num] <= 0; // Normally we don't branch
-                fetch_inst_queue_num <= fetch_inst_queue_num + 1; // Increment instruction number
-                fetch_addr <= fetch_addr + 4; // Advance to next op
-                casez(f_inst_lo)
-                    // JALR [rd], [ra], [imm29]
-                    OP_JALR: begin end // TODO: Prediction for JALR
-                    // JAL [imm29]
-                    OP_J_OR_JAL: begin // This one is good because it's guaranteed to branch
-                        $display("%m: (Branch Predict) jal [0x%h],lr=0x%h", { 3'h0, f_imm29 } << 2, fetch_addr + 4);
-                        if(f_inst_lo[0] == 0) begin // JAL variant clobbers LR
-                            regs_predict[REG_LR] <= regs_predict[REG_LR] | RP_NON_ZERO;
-                        end
-                        fetch_addr <= (fetch_addr & 32'h80000000) | ({ 3'h0, f_imm29 } << 2);
-                        fetch_addr_queue[fetch_inst_queue_num] <= 1;
-                        end
-                    // Branches's signs are checked, backwards branches are often used in loops
-                    // BEQ ra, [imm21]
-                    OP_BEQ: begin
-                        $display("%m: (Branch Predict) beq r%d,[%h]", f_opreg1, f_imm21);
-                        if(f_imm21[20] == 1 || 1) begin
-                            if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
-                            else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
-                            fetch_addr_queue[fetch_inst_queue_num] <= 1;
-                            $display("%m: (Branch Predict) Will be taken");
-                        end else begin
-                            $display("%m: (Branch Predict) Will not be taken");
-                        end
-                        end
-                    // BNE ra, [imm21]
-                    OP_BNE: begin
-                        $display("%m: (Branch Predict) bne r%d,[%h]", f_opreg1, f_imm21);
-                        if(f_imm21[20] == 1 || 1) begin
-                            if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
-                            else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
-                            fetch_addr_queue[fetch_inst_queue_num] <= 1;
-                            $display("%m: (Branch Predict) Will be taken");
-                        end else begin
-                            $display("%m: (Branch Predict) Will not be taken");
-                        end
-                        end
-                    // BLT ra, [imm21]
-                    OP_BLT: begin
-                        $display("%m: (Branch Predict) blt r%d,[%h]", f_opreg1, f_imm21);
-                        if(f_imm21[20] == 1 || (regs_predict[f_opreg1] & RP_ZERO) == 1) begin
-                            if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
-                            else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
-                            fetch_addr_queue[fetch_inst_queue_num] <= 1;
-                            $display("%m: (Branch Predict) Will be taken");
-                        end else begin
-                            $display("%m: (Branch Predict) Will not be taken");
-                        end
-                        end
-                    // ADDI [rd], [rd], [imm16]
-                    // SUBI [rd], [rd], [imm16]
-                    // SLTI [rd], [rd], [imm16]
-                    // SLTIS [rd], [rd], [imm16]
-                    // ANDI [rd], [rd], [imm16]
-                    // XORI [rd], [rd], [imm16]
-                    // ORI [rd], [rd], [imm16]
-                    // LUI [rd], [rd], [imm16]
-                    6'b??_?100: begin
-                        if(f_imm16 != 16'b0) begin
-                            regs_predict[f_opreg1] <= RP_NON_ZERO;
-                        end else begin
-                            regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
-                        end
-                        end
-                    6'b1?_?011: begin // MOV rd, [ra + imm16]
-                        regs_predict[f_opreg1] <= regs_predict[f_opreg1] | RP_UNSPEC_MEM;
-                        end
-                    6'b??_?010: begin end // MOV [ra + imm16], rd
-                    // Instructions starting with 111001
-                    6'b11_1001: begin
-                        casez(f_inst_hi[4:2])
-                            3'b111: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
-                            3'b110: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
-                            3'b011: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
-                            3'b010: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
-                            3'b001: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
-                            3'b101: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
-                            3'b100: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
-                            default: begin end
-                        endcase
-                        // These high 1 bit is indicative of a MOV, the following 3 bytes MUST have atleast one set
-                        if(f_inst_hi[5] == 1 && (f_inst_hi[4:2] & 3'b111) != 0 && (f_inst_hi[5:2] & 4'b1100) == 4'b1100) begin
+            end else if(state == S_FETCH) begin
+                $display("%m: (Fetch) Fetching");
+                addr <= fetch_addr;
+                we <= 0; // Read from memory
+                icache_we <= 0;
+                icache_addr_in <= fetch_addr;
+                // Once we can fetch instructions we save the state, but only if
+                // we aren't overwriting something being used by the executor!
+                if(rdy) begin
+                    $display("%m: (Fetch) Fetched inst=%b,fetch=0x%h", data_in, fetch_addr);
+                    icache_we <= 1; // Send the fetched instruction onto the i-cache
+                    fetch_addr <= fetch_addr + 4; // Advance to next op
+                    casez(f_inst_lo)
+                        // JALR [rd], [ra], [imm29]
+                        OP_JALR: begin end // TODO: Prediction for JALR
+                        // JAL [imm29]
+                        OP_J_OR_JAL: begin // This one is good because it's guaranteed to branch
+                            $display("%m: (Branch Predict) jal [0x%h],lr=0x%h", { 3'h0, f_imm29 } << 2, fetch_addr + 4);
+                            if(f_inst_lo[0] == 0) begin // JAL variant clobbers LR
+                                regs_predict[REG_LR] <= regs_predict[REG_LR] | RP_NON_ZERO;
+                            end
+                            fetch_addr <= (fetch_addr & 32'h80000000) | ({ 3'h0, f_imm29 } << 2);
+                            end
+                        // Branches's signs are checked, backwards branches are often used in loops
+                        // BEQ ra, [imm21]
+                        OP_BEQ: begin
+                            $display("%m: (Branch Predict) beq r%d,[%h]", f_opreg1, f_imm21);
+                            if(f_imm21[20] == 1 || 1) begin
+                                if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
+                                else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
+                                $display("%m: (Branch Predict) Will be taken");
+                            end else begin
+                                $display("%m: (Branch Predict) Will not be taken");
+                            end
+                            end
+                        // BNE ra, [imm21]
+                        OP_BNE: begin
+                            $display("%m: (Branch Predict) bne r%d,[%h]", f_opreg1, f_imm21);
+                            if(f_imm21[20] == 1 || 1) begin
+                                if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
+                                else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
+                                $display("%m: (Branch Predict) Will be taken");
+                            end else begin
+                                $display("%m: (Branch Predict) Will not be taken");
+                            end
+                            end
+                        // BLT ra, [imm21]
+                        OP_BLT: begin
+                            $display("%m: (Branch Predict) blt r%d,[%h]", f_opreg1, f_imm21);
+                            if(f_imm21[20] == 1 || (regs_predict[f_opreg1] & RP_ZERO) == 1 || 1) begin
+                                if(f_imm21[20] == 0) fetch_addr <= fetch_addr + ({ 12'h0, f_imm21[19:0] } << 2);
+                                else fetch_addr <= fetch_addr - ({ 12'h0, f_imm21[19:0] } << 2);
+                                $display("%m: (Branch Predict) Will be taken");
+                            end else begin
+                                $display("%m: (Branch Predict) Will not be taken");
+                            end
+                            end
+                        // ADDI [rd], [rd], [imm16]
+                        // SUBI [rd], [rd], [imm16]
+                        // SLTI [rd], [rd], [imm16]
+                        // SLTIS [rd], [rd], [imm16]
+                        // ANDI [rd], [rd], [imm16]
+                        // XORI [rd], [rd], [imm16]
+                        // ORI [rd], [rd], [imm16]
+                        // LUI [rd], [rd], [imm16]
+                        6'b??_?100: begin
+                            if(f_imm16 != 16'b0) begin
+                                regs_predict[f_opreg1] <= RP_NON_ZERO;
+                            end else begin
+                                regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
+                            end
+                            end
+                        6'b1?_?011: begin // MOV rd, [ra + imm16]
                             regs_predict[f_opreg1] <= regs_predict[f_opreg1] | RP_UNSPEC_MEM;
-                        end
-                        end
-                    6'b10_1001: begin
-                        $display("%m: (Branch Predict) privileged_inst");
-                        casez(f_inst_hi[5:2])
-                        OP_G2_MFCR: begin end
-                        OP_G2_MTCR: begin end
-                        OP_G2_CACHEI: begin end
-                        OP_G2_HLT: begin end
-                        default: fetch_addr <= ctl_regs[CREG_EVEC];
-                        endcase
-                        end
-                    6'b11_0001: begin
-                        $display("%m: (Branch Predict) special_insn");
-                        casez(f_inst_hi[5:2])
-                            OP_G3_DIV: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
-                            OP_G3_DIVS: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
-                            OP_G3_MOD: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
-                            OP_G3_MUL: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
-                            OP_G3_BRK: fetch_addr <= ctl_regs[CREG_EVEC];
-                            OP_G3_SYS: fetch_addr <= ctl_regs[CREG_EVEC];
+                            end
+                        6'b??_?010: begin end // MOV [ra + imm16], rd
+                        // Instructions starting with 111001
+                        6'b11_1001: begin
+                            casez(f_inst_hi[4:2])
+                                3'b111: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
+                                3'b110: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
+                                3'b011: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
+                                3'b010: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
+                                3'b001: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
+                                3'b101: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
+                                3'b100: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
+                                default: begin end
+                            endcase
+                            // These high 1 bit is indicative of a MOV, the following 3 bytes MUST have atleast one set
+                            if(f_inst_hi[5] == 1 && (f_inst_hi[4:2] & 3'b111) != 0 && (f_inst_hi[5:2] & 4'b1100) == 4'b1100) begin
+                                regs_predict[f_opreg1] <= regs_predict[f_opreg1] | RP_UNSPEC_MEM;
+                            end
+                            end
+                        6'b10_1001: begin
+                            $display("%m: (Branch Predict) privileged_inst");
+                            casez(f_inst_hi[5:2])
+                            OP_G2_MFCR: begin end
+                            OP_G2_MTCR: begin end
+                            OP_G2_CACHEI: begin end
+                            OP_G2_HLT: begin end
                             default: fetch_addr <= ctl_regs[CREG_EVEC];
-                        endcase
-                        end
-                    default: begin
-                        // ...
-                        end
-                endcase
+                            endcase
+                            end
+                        6'b11_0001: begin
+                            $display("%m: (Branch Predict) special_insn");
+                            casez(f_inst_hi[5:2])
+                                OP_G3_DIV: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
+                                OP_G3_DIVS: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
+                                OP_G3_MOD: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
+                                OP_G3_MUL: regs_predict[f_opreg1] <= regs_predict[f_opreg2] | regs_predict[f_opreg3];
+                                OP_G3_BRK: fetch_addr <= ctl_regs[CREG_EVEC];
+                                OP_G3_SYS: fetch_addr <= ctl_regs[CREG_EVEC];
+                                default: fetch_addr <= ctl_regs[CREG_EVEC];
+                            endcase
+                            end
+                        default: begin
+                            // ...
+                            end
+                    endcase
+                end
             end
         end
     end
 
-    // Execution thread
     always @(posedge clk) begin
-        if(!stall_execute) begin
-            for(i = 0; i < INSN_QUEUE_SIZE; i++) begin
-                if(i[3:0] == fetch_inst_queue_num) begin
-                    $display("%m: insn_queue #%2d addr=0x%h <-- FETCH", i, fetch_addr_queue[i]);
-                end else if(i[3:0] == execute_inst_queue_num) begin
-                    $display("%m: insn_queue #%2d addr=0x%h <-- EXECUTE", i, fetch_addr_queue[i]);
-                end else begin
-                    $display("%m: insn_queue #%2d addr=0x%h", i, fetch_addr_queue[i]);
-                end
-            end
-
+        // Execution thread
+        if(!stall_exec) begin
             if(state == S_BRANCHED) begin
                 $display("%m: S_BRANCHED");
                 // We have to decrement 1 the instruction number of the execution unit because it is automatically incremented by the
                 // parallel executor thread (see below)
-                if(took_branch != fetch_addr_queue[execute_inst_queue_num]) begin
+                if(1) begin
                     $display("%m: (Branch Predict) Failed prediction pc=0x%h", pc);
                     if(took_branch == 1) begin
                         $display("%m: (Branch Predict) I tought it wouldn't branch, but it did");
                     end else begin
                         $display("%m: (Branch Predict) I tought it would branch, but it did");
                     end
-
-                    for(i = 0; i < INSN_QUEUE_SIZE; i++) begin // Reset fetching
-                        fetch_addr_queue[i] = 0;
-                    end
-                    fetch_inst_queue_num <= 0;
-                    execute_inst_queue_num <= 0;
-                    stall_execute <= 0;
-                    stall_fetch <= 0;
+                    stall_sramio <= 0;
                     // This is used to update the fetch address after an exception or PC, meaning we had to stall
                     // so let's unstall the fetcher
                     fetch_addr <= pc;
@@ -552,11 +533,10 @@ module limn2600_Core
                     $display("%m: (Branch Predict) Success! prediction pc=0x%h", pc);
                 end
                 state <= S_EXECUTE;
-                stall_fetch <= 0;
+                stall_sramio <= 0;
             end else begin
-                $display("%m: Execution,num=%d,icache_data_out=0x%h,inst=0x%h,addr=0x%h,pc=0x%h", execute_inst_queue_num, icache_data_out, execute_inst, fetch_addr_queue[execute_inst_queue_num], pc);
+                $display("%m: Execution icache_data_out=0x%h,inst=0x%h,pc=0x%h", icache_data_out, execute_inst, pc);
                 took_branch <= 0;
-                execute_inst_queue_num <= execute_inst_queue_num + 1;
                 casez(inst_lo)
                     // This is an invalid opcode, but used internally as a "true no-op", no PC is modified
                     // no anything is modified, good for continuing the executor without stanling
@@ -570,9 +550,8 @@ module limn2600_Core
                         pc <= regs[opreg2] + ({ 16'h0, imm16 } << 2); // TODO: Sign extend
                         // No need to stall or inform of a branch, since we can accurately
                         // predict that this jump will ALWAYS happen
-                        stall_fetch <= 1;
                         state <= S_BRANCHED;
-                        took_branch <= 1;
+                        took_branch <= 0;
                         end
                     // JAL [imm29]
                     OP_J_OR_JAL: begin
@@ -596,7 +575,7 @@ module limn2600_Core
                         end else begin
                             pc <= pc + 4;
                         end
-                        stall_fetch <= 1;
+                        stall_sramio <= 1;
                         state <= S_BRANCHED;
                         end
                     // BNE ra, [imm21]
@@ -610,7 +589,7 @@ module limn2600_Core
                         end else begin
                             pc <= pc + 4;
                         end
-                        stall_fetch <= 1;
+                        stall_sramio <= 1;
                         state <= S_BRANCHED;
                         end
                     // BLT ra, [imm21]
@@ -624,7 +603,7 @@ module limn2600_Core
                         end else begin
                             pc <= pc + 4;
                         end
-                        stall_fetch <= 1;
+                        stall_sramio <= 1;
                         state <= S_BRANCHED;
                         end
                     // ADDI [rd], [rd], [imm16]
@@ -652,7 +631,7 @@ module limn2600_Core
                         read_regno <= opreg1;
                         rw_addr <= regs[opreg2] + { 16'h0, imm16 };
                         state <= S_READ;
-                        stall_fetch <= 1;
+                        stall_sramio <= 1;
                         pc <= pc + 4;
                         end
                     6'b??_?010: begin // MOV [ra + imm16], rd
@@ -665,7 +644,7 @@ module limn2600_Core
                         end
                         rw_addr <= regs[opreg1] + { 16'h0, imm16 };
                         state <= S_PREWRITE;
-                        stall_fetch <= 1;
+                        stall_sramio <= 1;
                         pc <= pc + 4;
                         end
                     // Instructions starting with 111001
@@ -695,7 +674,7 @@ module limn2600_Core
                                     write_value <= regs[opreg1];
                                     rw_addr <= regs[opreg2] + tmp32;
                                     state <= S_PREWRITE;
-                                    stall_fetch <= 1;
+                                    stall_sramio <= 1;
                                     end
                                 OP_G1_MOV_TR: begin // Move-To-Register
                                     $display("%m: mov(TR) r%d,[r%d+r%d+%d],sz=%b", opreg1, opreg2, opreg3, imm5, inst_hi[3:2]);
@@ -703,7 +682,7 @@ module limn2600_Core
                                     read_regno <= opreg1;
                                     rw_addr <= regs[opreg2] + tmp32;
                                     state <= S_READ;
-                                    stall_fetch <= 1;
+                                    stall_sramio <= 1;
                                     end
                                 default: begin end
                             endcase
@@ -713,11 +692,13 @@ module limn2600_Core
                     6'b10_1001: begin
                         $display("%m: privileged_inst");
                         casez(inst_hi[5:2])
+                        // MFCR [opreg1] [opreg3]
                         OP_G2_MFCR: begin
-                            $display("%m: mtcr r%d,cr%d", opreg1, opreg3);
+                            $display("%m: mfcr r%d,cr%d", opreg1, opreg3);
                             regs[opreg1] <= ctl_regs[opreg3];
                             pc <= pc + 4;
                             end
+                        // MTCR [opreg3] [opreg2]
                         OP_G2_MTCR: begin
                             $display("%m: mtcr cr%d,r%d", opreg3, opreg2);
                             ctl_regs[opreg3] <= regs[opreg2];
@@ -726,6 +707,8 @@ module limn2600_Core
                         // CACHEI [imm22]
                         OP_G2_CACHEI: begin
                             $display("%m: cachei [%h]", imm22);
+                            fetch_addr <= pc;
+                            stall_sramio <= 1;
                             pc <= pc + 4;
                             end
                         // FWC [imm22]
@@ -734,6 +717,7 @@ module limn2600_Core
                             pc <= ctl_regs[CREG_FWVEC];
                             ctl_regs[CREG_RS][31:28] <= ECAUSE_SYSCALL;
                             end
+                        // HLT [imm22]
                         OP_G2_HLT: begin
                             $display("%m: hlt [%h]", imm22);
                             pc <= pc + 4;
@@ -756,7 +740,7 @@ module limn2600_Core
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_BREAKPOINT;
-                                stall_fetch <= 1;
+                                stall_sramio <= 1;
                                 state <= S_BRANCHED;
                                 end
                             OP_G3_DIV: begin
@@ -766,7 +750,7 @@ module limn2600_Core
                                     ctl_regs[CREG_EBADADDR] <= pc;
                                     pc <= ctl_regs[CREG_EVEC];
                                     ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
-                                    stall_fetch <= 1;
+                                    stall_sramio <= 1;
                                     state <= S_BRANCHED;
                                 end else begin
                                     regs[opreg1] <= regs[opreg2] / regs[opreg3];
@@ -780,7 +764,7 @@ module limn2600_Core
                                     ctl_regs[CREG_EBADADDR] <= pc;
                                     pc <= ctl_regs[CREG_EVEC];
                                     ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
-                                    stall_fetch <= 1;
+                                    stall_sramio <= 1;
                                     state <= S_BRANCHED;
                                 end else begin
                                     // TODO: Properly perform signed division
@@ -799,7 +783,7 @@ module limn2600_Core
                                     ctl_regs[CREG_EBADADDR] <= pc;
                                     pc <= ctl_regs[CREG_EVEC];
                                     ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
-                                    stall_fetch <= 1;
+                                    stall_sramio <= 1;
                                     state <= S_BRANCHED;
                                 end else begin
                                     regs[opreg1] <= regs[opreg2] % regs[opreg3];
@@ -813,7 +797,7 @@ module limn2600_Core
                                     ctl_regs[CREG_EBADADDR] <= pc;
                                     pc <= ctl_regs[CREG_EVEC];
                                     ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
-                                    stall_fetch <= 1;
+                                    stall_sramio <= 1;
                                     state <= S_BRANCHED;
                                 end else begin
                                     regs[opreg1] <= regs[opreg2] * regs[opreg3];
@@ -830,7 +814,7 @@ module limn2600_Core
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_SYSCALL;
-                                stall_fetch <= 1;
+                                stall_sramio <= 1;
                                 state <= S_BRANCHED;
                                 end
                             default: begin
@@ -842,7 +826,7 @@ module limn2600_Core
                         ctl_regs[CREG_EBADADDR] <= pc;
                         pc <= ctl_regs[CREG_EVEC];
                         ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
-                        stall_fetch <= 1;
+                        stall_sramio <= 1;
                         state <= S_BRANCHED;
                     end
                 endcase
