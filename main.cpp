@@ -46,24 +46,25 @@ int main(int argc, char **argv, char **env)
 
     // ROM
     bool show_rom = true; // Whetever to show the ROM
-    auto *rom_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YUY2, SDL_TEXTUREACCESS_TARGET, 128, 256);
+    auto *rom_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YUY2, SDL_TEXTUREACCESS_TARGET, 256, 256);
     if (!rom_texture)
         throw std::runtime_error(std::string("ROM Texture creation failed: ") + SDL_GetError());
 
     // RAM
     bool show_ram = true; // Whetever to show the RAM
-    auto *ram_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YUY2, SDL_TEXTUREACCESS_TARGET, 512, 512);
+    auto *ram_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YUY2, SDL_TEXTUREACCESS_TARGET, 512, 1024);
     if (!ram_texture)
         throw std::runtime_error(std::string("RAM Texture creation failed: ") + SDL_GetError());
 
     bool show_nvram = true; // Whetever to show the NVRAM
-    auto *nvram_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YUY2, SDL_TEXTUREACCESS_TARGET, 128, 128);
+    auto *nvram_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YUY2, SDL_TEXTUREACCESS_TARGET, 128, 256);
     if (!nvram_texture)
         throw std::runtime_error(std::string("NVRAM Texture creation failed: ") + SDL_GetError());
 
     vluint64_t main_time = 0;
     bool run = true;
     int magnify = 1;
+    int x_offset = 0, y_offset = 0;
     while (!Verilated::gotFinish() && run)
     {
         printf("perf: Begin tick #%llu\n", main_time);
@@ -110,6 +111,23 @@ int main(int argc, char **argv, char **env)
                             magnify = 1;
                         }
                         break;
+                }
+                break;
+            case SDL_KEYDOWN:
+                switch(e.key.keysym.sym)
+                {
+                    case SDLK_w:
+                        y_offset += 8 * magnify;
+                        break;
+                    case SDLK_s:
+                        y_offset -= 8 * magnify;
+                        break;
+                    case SDLK_a:
+                        x_offset += 8 * magnify;
+                        break;
+                    case SDLK_d:
+                        x_offset -= 8 * magnify;
+                        break;
                     default:
                         break;
                 }
@@ -122,50 +140,42 @@ int main(int argc, char **argv, char **env)
         SDL_RenderClear(renderer);
 
         SDL_Rect dstrect;
-        int x_offset = 0;
+        int left_padding = 0;
         if (show_rom)
         {
-            dstrect.x = x_offset;
-            dstrect.y = 0;
+            dstrect.x = x_offset + left_padding;
+            dstrect.y = y_offset;
             int w, h;
             SDL_QueryTexture(rom_texture, NULL, NULL, &w, &h);
             dstrect.w = w * 2 * magnify;
             dstrect.h = h * 2 * magnify;
             SDL_UpdateTexture(rom_texture, NULL, &top->limn2600_System__DOT__SRAM__DOT__rom, w);
             SDL_RenderCopy(renderer, rom_texture, NULL, &dstrect);
-            x_offset += dstrect.w;
+            left_padding += dstrect.w;
         }
         if (show_ram)
         {
-            dstrect.x = x_offset;
-            dstrect.y = 0;
+            dstrect.x = x_offset + left_padding;
+            dstrect.y = y_offset;
             int w, h;
             SDL_QueryTexture(ram_texture, NULL, NULL, &w, &h);
-            if(show_rom)
-            {
-                dstrect.w = w * magnify;
-                dstrect.h = h * magnify;
-            }
-            else
-            {
-                dstrect.w = w * 2 * magnify;
-                dstrect.h = h * 2 * magnify;
-            }
+            dstrect.w = w * 2 * magnify;
+            dstrect.h = h * 2 * magnify;
             SDL_UpdateTexture(ram_texture, NULL, &top->limn2600_System__DOT__SRAM__DOT__ram, w);
             SDL_RenderCopy(renderer, ram_texture, NULL, &dstrect);
-            x_offset += dstrect.w;
+            left_padding += dstrect.w;
         }
         if (show_nvram)
         {
-            dstrect.x = x_offset;
-            dstrect.y = 0;
+            dstrect.x = x_offset + left_padding;
+            dstrect.y = y_offset;
             int w, h;
             SDL_QueryTexture(nvram_texture, NULL, NULL, &w, &h);
-            dstrect.w = w * magnify;
-            dstrect.h = h * magnify;
+            dstrect.w = w * 2 * magnify;
+            dstrect.h = h * 2 * magnify;
             SDL_UpdateTexture(nvram_texture, NULL, &top->limn2600_System__DOT__SRAM__DOT__nvram, w);
             SDL_RenderCopy(renderer, nvram_texture, NULL, &dstrect);
-            x_offset += dstrect.w;
+            left_padding += dstrect.w;
         }
 
         SDL_RenderPresent(renderer);
