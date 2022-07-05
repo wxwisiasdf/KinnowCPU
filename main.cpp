@@ -46,15 +46,20 @@ int main(int argc, char **argv, char **env)
 
     // ROM
     bool show_rom = true; // Whetever to show the ROM
-    auto *rom_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YUY2, SDL_TEXTUREACCESS_TARGET, 128, 128);
+    auto *rom_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB332, SDL_TEXTUREACCESS_TARGET, 128, 256);
     if (!rom_texture)
         throw std::runtime_error(std::string("ROM Texture creation failed: ") + SDL_GetError());
 
     // RAM
     bool show_ram = true; // Whetever to show the RAM
-    auto *ram_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YUY2, SDL_TEXTUREACCESS_TARGET, 512, 512);
+    auto *ram_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB332, SDL_TEXTUREACCESS_TARGET, 512, 512);
     if (!ram_texture)
         throw std::runtime_error(std::string("RAM Texture creation failed: ") + SDL_GetError());
+
+    bool show_nvram = true; // Whetever to show the NVRAM
+    auto *nvram_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB332, SDL_TEXTUREACCESS_TARGET, 128, 128);
+    if (!nvram_texture)
+        throw std::runtime_error(std::string("NVRAM Texture creation failed: ") + SDL_GetError());
 
     vluint64_t main_time = 0;
     bool run = true;
@@ -90,6 +95,9 @@ int main(int argc, char **argv, char **env)
                         break;
                     case SDLK_F2:
                         show_rom = !show_rom;
+                        break;
+                    case SDLK_F3:
+                        show_nvram = !show_nvram;
                         break;
                     default:
                         break;
@@ -134,6 +142,18 @@ int main(int argc, char **argv, char **env)
             }
             SDL_UpdateTexture(ram_texture, NULL, &top->limn2600_System__DOT__SRAM__DOT__ram, w * sizeof(IData));
             SDL_RenderCopy(renderer, ram_texture, NULL, &dstrect);
+            x_offset += dstrect.w;
+        }
+        if (show_nvram)
+        {
+            dstrect.x = x_offset;
+            dstrect.y = 0;
+            int w, h;
+            SDL_QueryTexture(nvram_texture, NULL, NULL, &w, &h);
+            dstrect.w = w;
+            dstrect.h = h;
+            SDL_UpdateTexture(nvram_texture, NULL, &top->limn2600_System__DOT__SRAM__DOT__nvram, w * sizeof(IData));
+            SDL_RenderCopy(renderer, nvram_texture, NULL, &dstrect);
             x_offset += dstrect.w;
         }
 

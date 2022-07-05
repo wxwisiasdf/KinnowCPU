@@ -4,7 +4,7 @@
 
 CPU implementing the Limn2600 architecture.
 
-## Features
+# Features
 * [x] ISA implemented
 * [x] Pipelining
 * [x] Parallel fetch and execution
@@ -14,6 +14,22 @@ CPU implementing the Limn2600 architecture.
 * [ ] Paging
 * [ ] TLB cache
 * [ ] Branch prediction
+
+# Running
+Clone the repository:
+```sh
+git clone --recurse-submodules https://github.com/wxwisiasdf/KinnowCPU
+```
+
+Install verilator and g++:
+```sh
+sudo apt install verilator g++
+```
+
+Build and run with:
+```sh
+sh build.sh
+```
 
 # Boot ROM
 Run this with your binary, non LOFF boot ROM - see the SDK for the A3X bootloader:
