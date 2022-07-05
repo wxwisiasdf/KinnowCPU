@@ -6,7 +6,7 @@
 module limn2600_cache
 #( // Parameter
     parameter DATA_WIDTH = 32,
-    parameter NUM_ENTRIES = 1024
+    parameter NUM_ENTRIES = 4096
 )
 ( // Interface
     input rst,
@@ -32,6 +32,7 @@ module limn2600_cache
 
     always @(posedge clk) begin
         if(rst) begin
+            $display("%m: Reset");
             for(i = 0; i < NUM_ENTRIES; i++) begin
                 cache[i] = 0;
             end
@@ -61,6 +62,6 @@ module limn2600_cache
     end
 
     initial begin
-        $display("%m: size=%0dKB,data_width=%0d bits", (NUM_ENTRIES / 1000) * (DATA_WIDTH / 8), DATA_WIDTH);
+        $display("%m: size=%0dKB,data_width=%0d bits", (NUM_ENTRIES * (DATA_WIDTH / 8)) / 1000, DATA_WIDTH);
     end
 endmodule
