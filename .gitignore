@@ -1,6 +1,6 @@
 *.o
 *.txt
 *.json
+*.bin
 *.dot
 obj_dir/
-boot.bin
