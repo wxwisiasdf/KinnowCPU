@@ -16,7 +16,7 @@
 #include "Vlimn2600_System.h"
 
 #define SCREEN_WIDTH 1280
-#define SCREEN_HEIGHT 640
+#define SCREEN_HEIGHT 800
 #define ARRAY_LENGTH(x) (sizeof(x) / sizeof((x)[0]))
 
 int main(int argc, char **argv, char **env)
@@ -52,7 +52,7 @@ int main(int argc, char **argv, char **env)
 
     // RAM
     bool show_ram = true; // Whetever to show the RAM
-    auto *ram_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YUY2, SDL_TEXTUREACCESS_TARGET, 256, 256);
+    auto *ram_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YUY2, SDL_TEXTUREACCESS_TARGET, 512, 512);
     if (!ram_texture)
         throw std::runtime_error(std::string("RAM Texture creation failed: ") + SDL_GetError());
 
@@ -111,7 +111,7 @@ int main(int argc, char **argv, char **env)
             int w, h;
             SDL_QueryTexture(rom_texture, NULL, NULL, &w, &h);
             dstrect.w = w * 2;
-            dstrect.h = h * 2;
+            dstrect.h = (int)((float)h * 1.5);
             SDL_UpdateTexture(rom_texture, NULL, &top->limn2600_System__DOT__SRAM__DOT__rom, w * sizeof(IData));
             SDL_RenderCopy(renderer, rom_texture, NULL, &dstrect);
             x_offset += dstrect.w;
@@ -121,9 +121,17 @@ int main(int argc, char **argv, char **env)
             dstrect.x = x_offset;
             dstrect.y = 0;
             int w, h;
-            SDL_QueryTexture(rom_texture, NULL, NULL, &w, &h);
-            dstrect.w = w * 4;
-            dstrect.h = h * 4;
+            SDL_QueryTexture(ram_texture, NULL, NULL, &w, &h);
+            if(show_rom)
+            {
+                dstrect.w = w;
+                dstrect.h = h;
+            }
+            else
+            {
+                dstrect.w = w * 2;
+                dstrect.h = h * 2;
+            }
             SDL_UpdateTexture(ram_texture, NULL, &top->limn2600_System__DOT__SRAM__DOT__ram, w * sizeof(IData));
             SDL_RenderCopy(renderer, ram_texture, NULL, &dstrect);
             x_offset += dstrect.w;
