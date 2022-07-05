@@ -6,6 +6,7 @@
 
 // Verilator
 #include <verilated.h>
+#include <verilated_vpi.h>
 
 // SDL
 #include <SDL2/SDL.h>
@@ -14,11 +15,18 @@
 // Project
 #include "Vlimn2600_System.h"
 
-#define SCREEN_WIDTH 640
-#define SCREEN_HEIGHT 400
+#define SCREEN_WIDTH 1280
+#define SCREEN_HEIGHT 640
+#define ARRAY_LENGTH(x) (sizeof(x) / sizeof((x)[0]))
 
 int main(int argc, char **argv, char **env)
 {
+    SDL_Color colors[256];
+    for(size_t i = 0; i < 256; i++)
+    {
+        colors[i].r = colors[i].g = colors[i].b = (Uint8)i;
+    }
+
     auto *window = SDL_CreateWindow("Limn2600", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SCREEN_WIDTH, SCREEN_HEIGHT, SDL_WINDOW_SHOWN);
     if (!window)
         throw std::runtime_error(std::string("Window creation failed: ") + SDL_GetError());
@@ -38,13 +46,13 @@ int main(int argc, char **argv, char **env)
 
     // ROM
     bool show_rom = true; // Whetever to show the ROM
-    auto *rom_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_TARGET, 128, 256);
+    auto *rom_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_TARGET, 128, 128);
     if (!rom_texture)
         throw std::runtime_error(std::string("ROM Texture creation failed: ") + SDL_GetError());
 
     // RAM
     bool show_ram = true; // Whetever to show the RAM
-    auto *ram_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_TARGET, 128, 256);
+    auto *ram_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_TARGET, 128, 128);
     if (!ram_texture)
         throw std::runtime_error(std::string("RAM Texture creation failed: ") + SDL_GetError());
 
@@ -79,6 +87,8 @@ int main(int argc, char **argv, char **env)
                 {
                     case SDLK_F1:
                         show_ram = !show_ram;
+                        break;
+                    case SDLK_F2:
                         show_rom = !show_rom;
                         break;
                     default:
@@ -98,9 +108,11 @@ int main(int argc, char **argv, char **env)
         {
             dstrect.x = x_offset;
             dstrect.y = 0;
-            dstrect.w = 128 * 2;
-            dstrect.h = 256 * 2;
-            SDL_UpdateTexture(rom_texture, NULL, &top->limn2600_System__DOT__SRAM__DOT__rom, 128 * sizeof(IData));
+            int w, h;
+            SDL_QueryTexture(rom_texture, NULL, NULL, &w, &h);
+            dstrect.w = w * 3;
+            dstrect.h = h * 3;
+            SDL_UpdateTexture(rom_texture, NULL, &top->limn2600_System__DOT__SRAM__DOT__rom, w * sizeof(IData));
             SDL_RenderCopy(renderer, rom_texture, NULL, &dstrect);
             x_offset += dstrect.w;
         }
@@ -108,9 +120,11 @@ int main(int argc, char **argv, char **env)
         {
             dstrect.x = x_offset;
             dstrect.y = 0;
-            dstrect.w = 128 * 2;
-            dstrect.h = 256 * 2;
-            SDL_UpdateTexture(ram_texture, NULL, &top->limn2600_System__DOT__SRAM__DOT__ram, 128 * sizeof(IData));
+            int w, h;
+            SDL_QueryTexture(rom_texture, NULL, NULL, &w, &h);
+            dstrect.w = w * 3;
+            dstrect.h = h * 3;
+            SDL_UpdateTexture(ram_texture, NULL, &top->limn2600_System__DOT__SRAM__DOT__ram, w * sizeof(IData));
             SDL_RenderCopy(renderer, ram_texture, NULL, &dstrect);
             x_offset += dstrect.w;
         }
