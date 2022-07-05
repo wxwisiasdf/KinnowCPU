@@ -6,8 +6,8 @@
 module limn2600_SRAM
 #( // Parameter
     parameter DATA_WIDTH = 32,
-    parameter ROM_SIZE = 32767,
-    parameter RAM_SIZE = (32768 * 16) - 1
+    parameter ROM_SIZE = 32768,
+    parameter RAM_SIZE = 32768 * 16
 )
 ( // Interface
     input rst,
@@ -19,8 +19,8 @@ module limn2600_SRAM
     input [DATA_WIDTH - 1:0] data_in,
     output reg [DATA_WIDTH - 1:0] data_out
 );
-    reg [DATA_WIDTH - 1:0] rom[0:ROM_SIZE]; // Bank 1 - READ ONLY
-    reg [DATA_WIDTH - 1:0] ram[0:RAM_SIZE]; // Bank 2 - READ-WRITE
+    reg [DATA_WIDTH - 1:0] rom[0:ROM_SIZE - 1]; // Bank 1 - READ ONLY
+    reg [DATA_WIDTH - 1:0] ram[0:RAM_SIZE - 1]; // Bank 2 - READ-WRITE
 
     integer i;
 

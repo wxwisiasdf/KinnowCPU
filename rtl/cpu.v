@@ -62,7 +62,7 @@ endmodule
 ///////////////////////////////////////////////////////////////////////////////
 module limn2600_Core
 #( // Parameter
-    parameter INSN_QUEUE_SIZE = 15
+    parameter INSN_QUEUE_SIZE = 16
 )
 ( // Interface
     input rst,
@@ -146,7 +146,7 @@ module limn2600_Core
     
     // Instruction fetcher
     reg stall_fetch;
-    reg fetch_addr_queue[0:INSN_QUEUE_SIZE]; // Whetever this instruction takes a branch
+    reg fetch_addr_queue[0:INSN_QUEUE_SIZE - 1]; // Whetever this instruction takes a branch
     reg [31:0] fetch_addr; // Address to fetch on, reset on JAL/J/BR
     wire [31:0] execute_inst = icache_data_out; // Instruction to execute
     reg [3:0] fetch_inst_queue_num;
@@ -282,7 +282,7 @@ module limn2600_Core
     always @(posedge clk) begin
         if(rst) begin
             $display("%m: Reset");
-            for(i = 0; i <= INSN_QUEUE_SIZE; i++) begin
+            for(i = 0; i < INSN_QUEUE_SIZE; i++) begin
                 fetch_addr_queue[i] = 0;
             end
             pc <= 32'hFFFE0000;
@@ -516,7 +516,7 @@ module limn2600_Core
     // Execution thread
     always @(posedge clk) begin
         if(!stall_execute) begin
-            for(i = 0; i <= INSN_QUEUE_SIZE; i++) begin
+            for(i = 0; i < INSN_QUEUE_SIZE; i++) begin
                 if(i[3:0] == fetch_inst_queue_num) begin
                     $display("%m: insn_queue #%2d addr=0x%h <-- FETCH", i, fetch_addr_queue[i]);
                 end else if(i[3:0] == execute_inst_queue_num) begin
@@ -538,7 +538,7 @@ module limn2600_Core
                         $display("%m: (Branch Predict) I tought it would branch, but it did");
                     end
 
-                    for(i = 0; i <= INSN_QUEUE_SIZE; i++) begin // Reset fetching
+                    for(i = 0; i < INSN_QUEUE_SIZE; i++) begin // Reset fetching
                         fetch_addr_queue[i] = 0;
                     end
                     fetch_inst_queue_num <= 0;
@@ -866,7 +866,11 @@ endmodule
 // for executing the whole instruction queue
 //
 ///////////////////////////////////////////////////////////////////////////////
-module limn2600_CPU(
+module limn2600_CPU
+#( // Parameters
+    parameter NUM_CORES = 4
+)
+( // Interface
     input rst,
     input clk,
     input irq,
@@ -877,6 +881,7 @@ module limn2600_CPU(
     output we, // Write-Enable (1 = we want to write, 0 = we want to read)
     output cs // Command-State (1 = memory commands active, 0 = memory commands ignored)
 );
+
     limn2600_Core core1(
         .rst(rst),
         .clk(clk),
@@ -888,4 +893,22 @@ module limn2600_CPU(
         .we(we),
         .cs(cs)
     );
+/*
+    generate
+        genvar i;
+        for(i = 0; i < NUM_CORES; i++) begin
+            limn2600_Core core[0:NUM_CORES - 1](
+                .rst(rst),
+                .clk(clk),
+                .irq(irq),
+                .addr(addr),
+                .data_in(data_in),
+                .data_out(data_out),
+                .rdy(rdy),
+                .we(we),
+                .cs(cs)
+            );
+        end
+    endgenerate
+*/
 endmodule

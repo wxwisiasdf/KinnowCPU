@@ -6,7 +6,7 @@
 module limn2600_cache
 #( // Parameter
     parameter DATA_WIDTH = 32,
-    parameter NUM_ENTRIES = 1023
+    parameter NUM_ENTRIES = 1024
 )
 ( // Interface
     input rst,
@@ -28,12 +28,12 @@ module limn2600_cache
         hash_result = (((((((x >> 16) ^ x) * 32'h45d9f3b) >> 16) ^ (((x >> 16) ^ x) * 32'h45d9f3b)) * 32'h45d9f3b) >> 16) ^ ((((((x >> 16) ^ x) * 32'h45d9f3b) >> 16) ^ (((x >> 16) ^ x) * 32'h45d9f3b)) * 32'h45d9f3b);
     endfunction
 
-    reg [DATA_WIDTH - 1:0] inst_cache[0:NUM_ENTRIES];
+    reg [DATA_WIDTH - 1:0] cache[0:NUM_ENTRIES - 1];
 
     always @(posedge clk) begin
         if(rst) begin
             for(i = 0; i < NUM_ENTRIES; i++) begin
-                inst_cache[i] = 0;
+                cache[i] = 0;
             end
             data_out <= 0;
         end
@@ -41,10 +41,23 @@ module limn2600_cache
 
     always @(posedge clk) begin
         $display("%m: k_out=0x%h,v_out=0x%h,k_in=0x%h,v_in=0x%h,we=%b,k_out_hash=0x%h,k_in_hash=0x%h", addr_out, data_out, addr_in, data_in, we, hash_result(addr_out), hash_result(addr_in));
-        if(we) begin
-            inst_cache[hash_result(addr_in) % NUM_ENTRIES] <= data_in;
+
+/*
+        for(i = 0; i < NUM_ENTRIES; i++) begin
+            if(i == (hash_result(addr_in) & (NUM_ENTRIES - 1))) begin
+                $display("%m: cache #%2d inst=0x%h <-- IN", i, cache[i]);
+            end else if(i == (hash_result(addr_out) & (NUM_ENTRIES - 1))) begin
+                $display("%m: cache #%2d inst=0x%h <-- OUT", i, cache[i]);
+            end else begin
+                $display("%m: cache #%2d inst=0x%h", i, cache[i]);
+            end
         end
-        data_out <= inst_cache[hash_result(addr_out) % NUM_ENTRIES];
+*/
+        
+        if(we) begin
+            cache[hash_result(addr_in) & (NUM_ENTRIES - 1)] <= data_in;
+        end
+        data_out <= cache[hash_result(addr_out) & (NUM_ENTRIES - 1)];
     end
 
     initial begin
