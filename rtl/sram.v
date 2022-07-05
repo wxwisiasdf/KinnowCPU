@@ -7,7 +7,7 @@ module limn2600_SRAM
 #( // Parameter
     parameter DATA_WIDTH = 32,
     parameter ROM_SIZE = 32768,
-    parameter RAM_SIZE = 65535
+    parameter RAM_SIZE = 262140
 )
 ( // Interface
     input rst,
@@ -33,9 +33,11 @@ module limn2600_SRAM
                     $display("%m: serial_emul WRITE <%b>", data_in);
                 end else if(addr[31:16] == 16'hFFFE) begin
                     $display("%m: ROM_write [shadow] data_in=0x%8h=>addr=0x%8h", data_in, addr);
-                end else begin
-                    ram[addr[17:2]] <= data_in;
+                end else if(addr[31:16] == 16'h0000) begin
+                    ram[addr[19:2]] <= data_in;
                     $display("%m: SRAM_write data_out=0x%8h=>addr=0x%8h", data_out, addr);
+                end else begin
+
                 end
                 rdy <= 1;
             end else begin
@@ -44,9 +46,11 @@ module limn2600_SRAM
                 end else if(addr[31:16] == 16'hFFFE) begin
                     data_out <= rom[addr[16:2]];
                     $display("%m: SROM_read [shadow] data_out=0x%8h=>addr=0x%8h", data_out, addr);
-                end else begin
-                    data_out <= ram[addr[17:2]];
+                end else if(addr[31:16] == 16'h0000) begin
+                    data_out <= ram[addr[19:2]];
                     $display("%m: SRAM_read data_out=0x%8h=>addr=0x%8h", data_out, addr);
+                end else begin
+
                 end
                 rdy <= 1;
             end
