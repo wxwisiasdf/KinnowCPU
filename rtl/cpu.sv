@@ -156,7 +156,7 @@ module limn2600_Core
     
     // Instruction fetcher
     wire [31:0] fetch_addr = pc; // Address to fetch on, reset on JAL/J/BR
-    wire [31:0] execute_inst = icache_data_out; // Instruction to execute
+    wire [31:0] execute_inst = data_in; // Instruction to execute
 
     // Branch prediction (fetcher stage)
     reg [3:0] regs_predict[0:31]; // Flags for the BP to tag registers
@@ -178,6 +178,9 @@ module limn2600_Core
     wire [4:0] opreg4 = execute_inst[25:21];
     wire [5:0] inst_hi = execute_inst[31:26];
     wire [1:0] opg1_instmode = execute_inst[27:26];
+    wire [1:0] mov_simple_tsz = execute_inst[4:3]; // Transmission size for simple arithmethic move
+    wire [1:0] mov_comp_tsz = inst_hi[3:2]; // Complex move (arithmethic) transmission size
+    
     // Register numbers
     parameter
         REG_LR = 31;
@@ -209,34 +212,23 @@ module limn2600_Core
 
     integer i;
 
-    reg icache_we;
-    reg [31:0] icache_addr_in;
-    wire [31:0] icache_data_out;
-    limn2600_cache icache(
-        .rst(rst),
-        .clk(clk),
-        .we(icache_we),
-        .addr_in(icache_addr_in),
-        .addr_out(pc),
-        .data_in(data_in),
-        .data_out(icache_data_out)
-    );
-
     always @(posedge clk) begin
         if(rst) begin
             $display("%m: Reset");
             pc <= 32'hFFFE0000;
-            state <= S_EXECUTE;
-            icache_addr_in <= 0;
-            cs <= 0;
+            data_out <= 0;
+            state <= S_FETCH; // Tell first fetch cycle so we can get a RDY sooner
+            cs <= 1;
             we <= 0;
-            icache_we <= 0;
+            addr <= 32'hFFFE0000;
         end else if(irq) begin
             $display("%m: exception IRQ event!");
             ctl_regs[CREG_EBADADDR] <= pc;
             pc <= ctl_regs[CREG_EVEC];
             ctl_regs[CREG_RS][31:28] <= ECAUSE_INTERRUPT;
-            state <= S_BRANCHED;
+            state <= S_FETCH;
+            cs <= 1;
+            addr <= ctl_regs[CREG_EVEC];
         end
         regs[0] <= 0;
         regs_predict[0] <= 0;
@@ -247,8 +239,6 @@ module limn2600_Core
         // Continous assignments, can be overriden by below statments
         cs <= 0;
         we <= 0;
-        icache_we <= 0;
-
         // Read a from the SRAM (1/1 cycles)
         if(state == S_READ) begin
             $display("%m: S_READ");
@@ -257,7 +247,12 @@ module limn2600_Core
                 // Check docs/isa.txt "Shortcuts - Trans size" for an explanation
                 $display("%m: Read size=%0d,mask=0x%h,shift=%0d,f_data=0x%h", (1 << (~trans_size)) * 8, (1 << ((1 << (~trans_size)) * 8)) - 1, (memio_addr & ((1 << (~trans_size)) - 1)) * ((1 << (~trans_size)) * 8), data_in & ((1 << ((1 << (~trans_size)) * 8)) - 1));
                 regs[read_regno] <= (data_in & ((1 << ((1 << (~trans_size)) * 8)) - 1)) << ((memio_addr & ((1 << (~trans_size)) - 1)) * ((1 << (~trans_size)) * 8));
-                state <= S_EXECUTE;
+                
+                // We already read the data by now, so send the data for the next cycle
+                // telling the RAM to prepare for sending out insns
+                state <= S_FETCH;
+                cs <= 1; // Notify RAM to send data, quickly
+                addr <= fetch_addr;
             end
         // Fetch the element from SRAM with 32-bits per unit of data
         // rememeber that we also need to write bytes so unaligned accesses
@@ -270,14 +265,14 @@ module limn2600_Core
             cs <= 1;
             if(rdy) begin
                 we <= 1; // Enable since there is some delay
+                state <= S_WRITE;
                 // Appropriately apply masks
                 if(1) begin // Aligned access
-                    if(trans_size == 2'b00) begin // 4-bytes, 1-per-cell
+                    if(trans_size == 2'b01) begin // 4-bytes, 1-per-cell
                         $display("%m: prewrite long");
                         we <= 1; // Since data_width == 32 we simply send the whole thing
                         data_out <= write_value;
-                        state <= S_EXECUTE;
-                        cs <= 0; // Disable commands
+                        state <= S_FETCH; // We already enabled CS, and WE will be reset to 0 on the next fetch
                     end else begin
                         write_value <= memio_aligned_write_mask(trans_size, memio_addr, data_in, write_value);
                     end
@@ -286,9 +281,10 @@ module limn2600_Core
                     ctl_regs[CREG_EBADADDR] <= pc;
                     pc <= ctl_regs[CREG_EVEC];
                     ctl_regs[CREG_RS][31:28] <= ECAUSE_UNALIGNED;
-                    state <= S_BRANCHED;
+                    state <= S_FETCH;
+                    cs <= 1;
+                    addr <= ctl_regs[CREG_EVEC];
                 end
-                state <= S_WRITE;
                 $display("%m: write_value=0x%h,memio_addr=0x%h,data_in=0x%h", write_value, memio_addr, data_in);
             end
         // After fetching the value and appropriately setting the masks
@@ -301,29 +297,28 @@ module limn2600_Core
             data_out <= write_value;
             if(rdy) begin
                 $display("%m: data_out=0x%h,write_value=0x%h,addr=0x%h", data_out, write_value, addr);
-                state <= S_EXECUTE;
-                cs <= 0; // Disable commands
+                state <= S_FETCH;
+                we <= 0;
+                cs <= 1; // Notify RAM to send data, quickly
+                addr <= fetch_addr;
             end
         end else if(state == S_FETCH) begin
-            $display("%m: (Fetch) Fetching");
+            $display("%m: (Fetch) Fetching,rdy=%b", rdy);
             cs <= 1; // Read from memory
             addr <= fetch_addr;
-            icache_addr_in <= fetch_addr;
             // Once we can fetch instructions we save the state, but only if
             // we aren't overwriting something being used by the executor!
             if(rdy) begin
                 $display("%m: (Fetch) Fetched inst=%b,fetch=0x%h", data_in, fetch_addr);
-                icache_we <= 1; // Write the fetched instruction onto the i-cache
                 state <= S_EXECUTE;
                 cs <= 0; // Disable commands
             end
         // Execution thread
-        end else if(state == S_BRANCHED) begin
-            $display("%m: S_BRANCHED");
-            state <= S_FETCH;
         end else if(state == S_EXECUTE) begin
-            $display("%m: Execution icache_data_out=0x%h,inst=0x%h,pc=0x%h", icache_data_out, execute_inst, pc);
+            $display("%m: Execution data_in=0x%h<%b>,insn=0x%h,pc=0x%h", data_in, data_in, execute_inst, pc);
             state <= S_FETCH;
+            cs <= 1; // Notify RAM to send data, quickly
+            addr <= fetch_addr;
             pc <= pc + 4; // By default advance one instruction, can of course be overriden because this is combinatorial ;)
             casez(inst_lo)
                 // This is an invalid opcode, but used internally as a "true no-op", no PC is modified
@@ -340,8 +335,15 @@ module limn2600_Core
                 6'b11_1000: begin
                     $display("%m: jalr r%0d,r%0d,[%h]", opreg1, opreg2, { 8'h0, imm16 } << 2);
                     regs[opreg1] <= pc + 4;
-                    pc <= regs[opreg2] + ({ 16'h0, imm16 } << 2); // TODO: Sign extend
-                    state <= S_BRANCHED;
+                    if(imm21[15] == 1) begin // Negative
+                        pc <= regs[opreg2] + ({ 16'h0, ~imm16 } << 2);
+                        addr <= regs[opreg2] + ({ 16'h0, ~imm16 } << 2);
+                    end else begin // Positive
+                        pc <= regs[opreg2] + ({ 16'h0, imm16 } << 2);
+                        addr <= regs[opreg2] + ({ 16'h0, imm16 } << 2);
+                    end
+                    state <= S_FETCH;
+                    cs <= 1;
                     end
                 // JAL [imm29]
                 6'b??_?11?: begin
@@ -350,49 +352,61 @@ module limn2600_Core
                         regs[REG_LR] <= pc + 4;
                     end
                     pc <= (pc & 32'h80000000) | ({ 3'h0, imm29 } << 2);
+                    state <= S_FETCH;
+                    cs <= 1;
+                    addr <= (pc & 32'h80000000) | ({ 3'h0, imm29 } << 2);
                     end
                 // BEQ ra, [imm21]
                 6'b11_1101: begin
                     if(regs[opreg1] == 32'h0) begin
                         $display("%m: Branch taken!");
-                        if(imm21[20] == 1) begin
+                        if(imm21[20] == 1) begin // Negative
                             $display("%m: beq r%0d,[-%0d]", opreg1, ~imm21[19:0]);
                             pc <= pc - ({ 12'h0, ~imm21[19:0] } << 2);
-                        end else begin
-                            $display("%m: beq r%0d,[%0d]", opreg1, imm21[19:0]);
+                            addr <= pc + ({ 12'h0, ~imm21[19:0] } << 2);
+                        end else begin // Positive
+                            $display("%m: bne r%0d,[%0d]", opreg1, imm21[19:0]);
                             pc <= pc + ({ 12'h0, imm21[19:0] } << 2);
+                            addr <= pc + ({ 12'h0, imm21[19:0] } << 2);
                         end
                     end
-                    state <= S_BRANCHED;
+                    state <= S_FETCH;
+                    cs <= 1;
                     end
                 // BNE ra, [imm21]
                 6'b11_0101: begin
                     if(regs[opreg1] != 32'h0) begin
                         $display("%m: Branch taken!");
-                        if(imm21[20] == 1) begin
+                        if(imm21[20] == 1) begin // Negative
                             $display("%m: bne r%0d,[-%0d]", opreg1, ~imm21[19:0]);
                             pc <= pc - ({ 12'h0, ~imm21[19:0] } << 2);
-                        end else begin
+                            addr <= pc + ({ 12'h0, ~imm21[19:0] } << 2);
+                        end else begin // Positive
                             $display("%m: bne r%0d,[%0d]", opreg1, imm21[19:0]);
                             pc <= pc + ({ 12'h0, imm21[19:0] } << 2);
+                            addr <= pc + ({ 12'h0, imm21[19:0] } << 2);
                         end
                     end
-                    state <= S_BRANCHED;
+                    state <= S_FETCH;
+                    cs <= 1;
                     end
                 // BLT ra, [imm21]
                 6'b10_1101: begin
                     // Branch taken if it's less than 0 (signed comparison)
                     if(regs[opreg1][31] == 1) begin
                         $display("%m: Branch taken!");
-                        if(imm21[20] == 1) begin
+                        if(imm21[20] == 1) begin // Negative
                             $display("%m: blt r%0d,[-%0d]", opreg1, ~imm21[19:0]);
                             pc <= pc - ({ 12'h0, ~imm21[19:0] } << 2);
-                        end else begin
+                            addr <= pc + ({ 12'h0, ~imm21[19:0] } << 2);
+                        end else begin // Positive
                             $display("%m: blt r%0d,[%0d]", opreg1, imm21[19:0]);
                             pc <= pc + ({ 12'h0, imm21[19:0] } << 2);
+                            addr <= pc + ({ 12'h0, imm21[19:0] } << 2);
                         end
                     end
-                    state <= S_BRANCHED;
+                    state <= S_FETCH;
+                    cs <= 1;
                     end
                 // ADDI [rd], [rd], [imm16]
                 // SUBI [rd], [rd], [imm16]
@@ -413,27 +427,27 @@ module limn2600_Core
                     end
                     end
                 6'b1?_?011: begin // MOV rd, [rs + imm16]
-                    $display("%m: mov(5)(R) r%0d,[r%0d+%h],sz=%b", opreg1, opreg2, { 8'h0, imm16 }, trans_size);
-                    trans_size <= inst_lo[4:3];
+                    $display("%m: mov(5)(R) r%0d,[r%0d+%h],sz=%b", opreg1, opreg2, { 8'h0, imm16 }, mov_simple_tsz);
+                    trans_size <= mov_simple_tsz;
                     read_regno <= opreg1;
-                    memio_addr <= regs[opreg2] + ({ 16'h0, imm16} << (~trans_size));
-                    addr <= regs[opreg2] + ({ 16'h0, imm16 } << (~trans_size));
+                    memio_addr <= regs[opreg2] + ({ 16'h0, imm16} << (~mov_simple_tsz));
+                    addr <= regs[opreg2] + ({ 16'h0, imm16 } << (~mov_simple_tsz));
                     state <= S_READ;
                     cs <= 1;
                     end
                 6'b??_?010: begin // MOV [ra + imm16], rb
-                    trans_size <= inst_lo[4:3];
+                    trans_size <= mov_simple_tsz;
                     if(inst_lo[5] == 1) begin // Move register to memory
-                        $display("%m: mov(16)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 } << (~trans_size), opreg2, trans_size);
+                        $display("%m: mov(16)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 } << (~mov_simple_tsz), opreg2, mov_simple_tsz);
                         write_value <= regs[opreg2];
                         data_out <= regs[opreg2];
                     end else begin // Move immediate to memory
-                        $display("%m: mov(5)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 } << (~trans_size), opreg2, trans_size);
+                        $display("%m: mov(5)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 } << (~mov_simple_tsz), opreg2, mov_simple_tsz);
                         write_value <= { 27'h0, imm5 };
                         data_out <= { 27'h0, imm5 };
                     end
-                    memio_addr <= regs[opreg1] + ({ 16'h0, imm16} << (~trans_size));
-                    addr <= regs[opreg1] + ({ 16'h0, imm16 } << (~trans_size));
+                    memio_addr <= regs[opreg1] + ({ 16'h0, imm16} << (~mov_simple_tsz));
+                    addr <= regs[opreg1] + ({ 16'h0, imm16 } << (~mov_simple_tsz));
                     state <= S_PREWRITE;
                     cs <= 1;
                     end
@@ -455,21 +469,21 @@ module limn2600_Core
                             regs[opreg1] <= ~(regs[opreg2] | tmp32);
                             end
                         4'b11??: begin // Move-From-Registers
-                            $display("%m: mov(W)(REG) [r%0d+r%0d+%d],r%0d,sz=%b", opreg2, opreg3, imm5, opreg1, inst_hi[3:2]);
-                            trans_size <= inst_hi[3:2];
+                            $display("%m: mov(W)(REG) [r%0d+r%0d+%d],r%0d,sz=%b", opreg2, opreg3, imm5, opreg1, mov_comp_tsz);
+                            trans_size <= mov_comp_tsz;
                             write_value <= regs[opreg1];
                             data_out <= regs[opreg1];
-                            memio_addr <= regs[opreg2] + (tmp32 << (~trans_size));
-                            addr <= regs[opreg2] + (tmp32 << (~trans_size));
+                            memio_addr <= regs[opreg2] + (tmp32 << (~mov_comp_tsz));
+                            addr <= regs[opreg2] + (tmp32 << (~mov_comp_tsz));
                             state <= S_PREWRITE;
                             cs <= 1;
                             end
                         4'b10??: begin // Move-To-Register
-                            $display("%m: mov(R)(REG) r%0d,[r%0d+r%0d+%d],sz=%b", opreg1, opreg2, opreg3, imm5, inst_hi[3:2]);
-                            trans_size <= inst_hi[3:2];
+                            $display("%m: mov(R)(REG) r%0d,[r%0d+r%0d+%d],sz=%b", opreg1, opreg2, opreg3, imm5, mov_comp_tsz);
+                            trans_size <= mov_comp_tsz;
                             read_regno <= opreg1;
-                            memio_addr <= regs[opreg2] + (tmp32 << (~trans_size));
-                            addr <= regs[opreg2] + (tmp32 << (~trans_size));
+                            memio_addr <= regs[opreg2] + (tmp32 << (~mov_comp_tsz));
+                            addr <= regs[opreg2] + (tmp32 << (~mov_comp_tsz));
                             state <= S_READ;
                             cs <= 1;
                             end
@@ -524,7 +538,9 @@ module limn2600_Core
                             ctl_regs[CREG_EBADADDR] <= pc;
                             pc <= ctl_regs[CREG_EVEC];
                             ctl_regs[CREG_RS][31:28] <= ECAUSE_BREAKPOINT;
-                            state <= S_BRANCHED;
+                            state <= S_FETCH;
+                            cs <= 1;
+                            addr <= ctl_regs[CREG_EVEC];
                             end
                         4'b1101: begin
                             if(opreg4 != 5'b0) begin
@@ -533,7 +549,9 @@ module limn2600_Core
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
-                                state <= S_BRANCHED;
+                                state <= S_FETCH;
+                                cs <= 1;
+                                addr <= ctl_regs[CREG_EVEC];
                             end else begin
                                 regs[opreg1] <= regs[opreg2] / regs[opreg3];
                             end
@@ -545,7 +563,9 @@ module limn2600_Core
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
-                                state <= S_BRANCHED;
+                                state <= S_FETCH;
+                                cs <= 1;
+                                addr <= ctl_regs[CREG_EVEC];
                             end else begin
                                 // TODO: Properly perform signed division
                                 regs[opreg1] <= { (regs[opreg2][31] | regs[opreg3][31]), regs[opreg2][30:0] / regs[opreg3][30:0] };
@@ -554,29 +574,29 @@ module limn2600_Core
                         4'b1001: begin
                             // TODO: Is this a memory access?
                             end
-                        4'b1011: begin
+                        4'b1011: begin // MOD rd,ra,rb
                             if(opreg4 != 5'b0) begin
                                 // Raise UD
                                 $display("%m: exception invalid mod inst=%b", execute_inst);
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
-                                state <= S_BRANCHED;
-                            end else begin
-                                regs[opreg1] <= regs[opreg2] % regs[opreg3];
+                                state <= S_FETCH;
+                                cs <= 1;
+                                addr <= ctl_regs[CREG_EVEC];
+                            end else regs[opreg1] <= regs[opreg2] % regs[opreg3];
                             end
-                            end
-                        4'b1111: begin
+                        4'b1111: begin // MUL rd,ra,rb
                             if(opreg4 != 5'b0) begin
                                 // Raise UD
                                 $display("%m: exception invalid mul inst=%b", execute_inst);
                                 ctl_regs[CREG_EBADADDR] <= pc;
                                 pc <= ctl_regs[CREG_EVEC];
                                 ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
-                                state <= S_BRANCHED;
-                            end else begin
-                                regs[opreg1] <= regs[opreg2] * regs[opreg3];
-                            end
+                                state <= S_FETCH;
+                                cs <= 1;
+                                addr <= ctl_regs[CREG_EVEC];
+                            end else regs[opreg1] <= regs[opreg2] * regs[opreg3];
                             end
                         4'b1000: begin
                             // TODO: Is this a memory access?
@@ -587,7 +607,9 @@ module limn2600_Core
                             ctl_regs[CREG_EBADADDR] <= pc;
                             pc <= ctl_regs[CREG_EVEC];
                             ctl_regs[CREG_RS][31:28] <= ECAUSE_SYSCALL;
-                            state <= S_BRANCHED;
+                            state <= S_FETCH;
+                            cs <= 1;
+                            addr <= ctl_regs[CREG_EVEC];
                             end
                         default: begin
                             end
@@ -598,7 +620,9 @@ module limn2600_Core
                     ctl_regs[CREG_EBADADDR] <= pc;
                     pc <= ctl_regs[CREG_EVEC];
                     ctl_regs[CREG_RS][31:28] <= ECAUSE_INVALID_INST;
-                    state <= S_BRANCHED;
+                    state <= S_FETCH;
+                    cs <= 1;
+                    addr <= ctl_regs[CREG_EVEC];
                 end
             endcase
         end

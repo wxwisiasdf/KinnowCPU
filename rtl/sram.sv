@@ -31,8 +31,10 @@ module limn2600_SRAM
         rdy <= 0;
         if(cs) begin
             if(we) begin
-                if(addr == 32'hF8000044) begin
-                    $display("%m: serial_emul WRITE <%b> %c", data_in, data_in[7:0]);
+                if(addr == 32'hF8000040) begin
+                    $display("%m: serial_emul WRITE CMD <%b> %c", data_in[7:0], data_in[7:0]);
+                end else if(addr == 32'hF8000044) begin
+                    $display("%m: serial_emul WRITE 0x%h<%b> %c", data_in[7:0], data_in[7:0], data_in[7:0]);
                 end else if(addr[31:16] == 16'hFFFE) begin
                     $display("%m: ROM_write [shadow] data_in=0x%8h=>addr=0x%8h", data_in, addr);
                 end else if(addr[31:16] == 16'h0000) begin
