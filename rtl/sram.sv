@@ -44,7 +44,6 @@ module limn2600_SRAM
                 end else begin
 
                 end
-                rdy <= 1;
             end else begin
                 if(addr == 32'hF8000040) begin
                     $display("%m: serial_emul READ_CMD <%b>", data_out);
@@ -64,8 +63,8 @@ module limn2600_SRAM
                 end else begin
 
                 end
-                rdy <= 1;
             end
+            rdy <= 1;
         end
     end
 
