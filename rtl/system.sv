@@ -1,8 +1,8 @@
 `timescale 1ns / 1ps
 
-`include "rtl/cache.v"
-`include "rtl/cpu.v"
-`include "rtl/sram.v"
+`include "rtl/cache.sv"
+`include "rtl/cpu.sv"
+`include "rtl/sram.sv"
 
 ///////////////////////////////////////////////////////////////////////////////
 //
