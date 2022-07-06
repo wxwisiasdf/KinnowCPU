@@ -1,6 +1,5 @@
 `timescale 1ns / 1ps
 
-`include "rtl/cache.sv"
 `include "rtl/cpu.sv"
 `include "rtl/sram.sv"
 

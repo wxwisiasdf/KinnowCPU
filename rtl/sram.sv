@@ -75,5 +75,9 @@ module limn2600_SRAM
         $display("%m: ram_size=%0dKB,data_width=%0d bits", ((DATA_WIDTH / 8) * RAM_SIZE) / 1000, DATA_WIDTH);
         $display("%m: rom_size=%0dKB,data_width=%0d bits", ((DATA_WIDTH / 8) * ROM_SIZE) / 1000, DATA_WIDTH);
         $readmemh("../rom.txt", rom);
+
+        for(i = 0; i < RAM_SIZE; i++) begin
+            ram[i] = i[31:0];
+        end
     end
 endmodule

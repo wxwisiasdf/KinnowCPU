@@ -1,3 +1,5 @@
+`include "rtl/cache.sv"
+
 module limn2600_ALU
 ( // Parameter
     input rst,
@@ -219,6 +221,9 @@ module limn2600_Core
     localparam S_READ = 4;
     localparam S_HALT = 5;
     localparam S_BRANCHED = 6;
+    localparam S_GET_TLB_ENTRY = 7;
+    localparam S_GET_TLB_FN = 8;
+    localparam S_SET_TLB_ENTRY = 9;
     
     // Instruction fetcher
     wire [31:0] fetch_addr = pc; // Address to fetch on, reset on JAL/J/BR
@@ -279,6 +284,24 @@ module limn2600_Core
 
     integer i;
 
+    // TLB cache
+    wire tlb_we;
+    wire tlb_find;
+    reg [31:0] tlb_addr_in; // Input to the TLB
+    reg [31:0] tlb_data_in;
+    reg [31:0] tlb_addr_out; // Output from the TLB
+    wire [31:0] tlb_data_out;
+    limn2600_cache tlb_cache(
+        .rst(rst),
+        .clk(clk),
+        .we(tlb_we),
+        .find(tlb_find),
+        .addr_in(tlb_addr_in),
+        .data_in(tlb_data_in),
+        .addr_out(tlb_addr_out),
+        .data_out(tlb_data_out)
+    );
+
     always @(posedge clk) begin
         if(rst) begin
             $display("%m: Reset");
@@ -288,6 +311,8 @@ module limn2600_Core
             cs <= 1;
             we <= 0;
             addr <= 32'hFFFE0000;
+            tlb_we <= 0;
+            tlb_find <= 0;
         end else if(irq) begin
             $display("%m: exception IRQ event!");
             raise_exception(ECAUSE_INTERRUPT);
@@ -530,6 +555,31 @@ module limn2600_Core
                         $display("%m: hlt [%h]", imm22);
                         state <= S_HALT;
                         end
+                    // TBLD
+                    4'b0011: begin
+                        $display("%m: tbld [%h]", imm22);
+                        ctl_regs[CREG_TBLO] <= { 12'h0, (ctl_regs[CREG_TBLO][24:5] << 12) } | { 22'h0, (ctl_regs[CREG_TBHI][9:0] << 2) };
+                        end
+                    // TBLO
+                    4'b0010: begin
+                        $display("%m: tblo [%0d]", imm22);
+                        state <= S_GET_TLB_ENTRY; // Next cycle is guaranteed to output in tlb_data_out the given tlb
+                        tlb_addr_out <= ctl_regs[CREG_TBINDEX];
+                        end
+                    // TBFN
+                    4'b0001: begin
+                        $display("%m: tbfn [%0d]", imm22);
+                        state <= S_GET_TLB_FN;
+                        tlb_find <= 1;
+                        tlb_data_in <= ctl_regs[CREG_TBLO];
+                        end
+                    // TBWR
+                    4'b0000: begin
+                        $display("%m: tbwr [%0d]", imm22);
+                        tlb_we <= 1; // Set TLB entry
+                        tlb_addr_in <= ctl_regs[CREG_TBINDEX];
+                        tlb_data_in <= ctl_regs[CREG_TBHI] | ctl_regs[CREG_TBLO];
+                        end
                     default: begin // Invalid instruction
                         $display("%m: exception invalid_grp2=0b%b", inst_hi[5:2]);
                         raise_exception(ECAUSE_INVALID_INST);
@@ -597,6 +647,20 @@ module limn2600_Core
                     raise_exception(ECAUSE_INVALID_INST);
                 end
             endcase
+        end else if(state == S_GET_TLB_ENTRY) begin
+            // TODO: RDY for TLB
+            ctl_regs[CREG_TBHI] <= tlb_data_out; // TODO: Is this correct?
+            ctl_regs[CREG_TBLO] <= tlb_data_out;
+            state <= S_FETCH;
+            cs <= 1;
+            addr <= pc;
+        end else if(state == S_GET_TLB_FN) begin
+            // TODO: RDY for TLB
+            // By now data from the TLB has arrived, negative values will be given for indicating NOT-FOUND
+            ctl_regs[CREG_TBINDEX] <= tlb_data_out;
+            state <= S_FETCH;
+            cs <= 1;
+            addr <= pc;
         end
     end
 

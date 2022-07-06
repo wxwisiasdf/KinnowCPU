@@ -12,10 +12,12 @@ module limn2600_cache
     input rst,
     input clk,
     input we, // Write enable
-    input [31:0] addr_out, // Address
-    input [31:0] data_in, // Data-in
-    input [31:0] addr_in,
-    output reg [31:0] data_out // Data-out
+    input find, // Whetever to perform find-mode (uses data-in for finding)
+    input [31:0] addr_in, // Address-in
+    input [DATA_WIDTH - 1:0] data_in, // Data-in
+    input [31:0] addr_out, // Address-out
+    output reg [DATA_WIDTH - 1:0] data_out // Data-out
+    // TODO: RDY output state wire
 );
     integer i;
     function [DATA_WIDTH - 1:0] hash_result(
@@ -58,7 +60,16 @@ module limn2600_cache
         if(we) begin
             cache[hash_result(addr_in) & (NUM_ENTRIES - 1)] <= data_in;
         end
-        data_out <= cache[hash_result(addr_out) & (NUM_ENTRIES - 1)];
+        if(find) begin
+            data_out <= { 1'b1, 31'h0 }; // Negative value
+            for(i = 0; i < NUM_ENTRIES; i++) begin
+                if(cache[i] == data_in) begin
+                    data_out <= i[31:0];
+                end
+            end
+        end else begin
+            data_out <= cache[hash_result(addr_out) & (NUM_ENTRIES - 1)];
+        end
     end
 
     initial begin
