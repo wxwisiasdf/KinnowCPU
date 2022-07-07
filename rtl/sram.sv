@@ -77,7 +77,7 @@ module limn2600_SRAM
         $readmemh("../rom.txt", rom);
 
         for(i = 0; i < RAM_SIZE; i++) begin
-            ram[i] = i[31:0];
+            ram[i] = 32'hFFFFFFFF;
         end
     end
 endmodule

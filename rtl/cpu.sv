@@ -185,6 +185,14 @@ module limn2600_Core
         addr <= write_addr;
         state <= S_PREWRITE;
         cs <= 1;
+        // Optimization for 32-bit aligned writes, we can just write the value and immediately
+        // return back to fetching
+        if(size == 2'b01 && (write_addr & 32'h3) == 32'h0) begin
+            we <= 1; // Enable since there is some delay
+            data_out <= write_value;
+            state <= S_FETCH; // We already enabled CS, and WE will be reset to 0 on the next fetch
+            $display("%m: (aligned long) write_value=0x%h,memio_addr=0x%h,data_in=0x%h", write_value, memio_addr, data_in);
+        end
     endfunction
 
     function [31:0] do_alu_shift(
@@ -205,7 +213,7 @@ module limn2600_Core
     reg [31:0] regs[0:31]; // Limnstation has 32 registers
     reg [31:0] ctl_regs[0:31];
     reg [31:0] pc; // Program counter
-    reg [2:0] state;
+    reg [3:0] state;
 
     // I/O machine
     reg [1:0] trans_size; // Memory transfer size
@@ -285,8 +293,8 @@ module limn2600_Core
     integer i;
 
     // TLB cache
-    wire tlb_we;
-    wire tlb_find;
+    reg tlb_we;
+    reg tlb_find;
     reg [31:0] tlb_addr_in; // Input to the TLB
     reg [31:0] tlb_data_in;
     reg [31:0] tlb_addr_out; // Output from the TLB
