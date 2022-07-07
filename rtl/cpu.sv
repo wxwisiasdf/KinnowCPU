@@ -420,7 +420,7 @@ module limn2600_Core
                     $display("%m: jalr r%0d,r%0d,[%h]", opreg1, opreg2, { 8'h0, imm16 } << 2);
                     regs[opreg1] <= pc + 4;
                     if(imm21[15] == 1) begin // Negative
-                        branch_to(regs[opreg2] + ({ 16'h0, ~imm16 } << 2));
+                        branch_to(regs[opreg2] - (4 + ({ 17'h0, ~imm16[14:0] } << 2)));
                     end else begin // Positive
                         branch_to(regs[opreg2] + ({ 16'h0, imm16 } << 2));
                     end
@@ -438,8 +438,8 @@ module limn2600_Core
                     if(regs[opreg1] == 32'h0) begin
                         $display("%m: Branch taken!");
                         if(imm21[20] == 1) begin // Negative
-                            $display("%m: beq r%0d,[-%0d]", opreg1, { 12'h0, ~imm21[19:0] } << 2);
-                            branch_to(pc - ({ 12'h0, ~imm21[19:0] } << 2));
+                            $display("%m: beq r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
+                            branch_to(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
                         end else begin // Positive
                             $display("%m: beq r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
                             branch_to(pc + ({ 12'h0, imm21[19:0] } << 2));
@@ -451,8 +451,8 @@ module limn2600_Core
                     if(regs[opreg1] != 32'h0) begin
                         $display("%m: Branch taken!");
                         if(imm21[20] == 1) begin // Negative
-                            $display("%m: bne r%0d,[-%0d]", opreg1, { 12'h0, ~imm21[19:0] } << 2);
-                            branch_to(pc - ({ 12'h0, ~imm21[19:0] } << 2));
+                            $display("%m: bne r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
+                            branch_to(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
                         end else begin // Positive
                             $display("%m: bne r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
                             branch_to(pc + ({ 12'h0, imm21[19:0] } << 2));
@@ -465,8 +465,8 @@ module limn2600_Core
                     if(regs[opreg1][31] == 1) begin
                         $display("%m: Branch taken!");
                         if(imm21[20] == 1) begin // Negative
-                            $display("%m: blt r%0d,[-%0d]", opreg1, { 12'h0, ~imm21[19:0] } << 2);
-                            branch_to(pc - ({ 12'h0, ~imm21[19:0] } << 2));
+                            $display("%m: blt r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
+                            branch_to(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
                         end else begin // Positive
                             $display("%m: blt r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
                             branch_to(pc + ({ 12'h0, imm21[19:0] } << 2));
