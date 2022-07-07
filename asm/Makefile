@@ -2,7 +2,7 @@ SDK_PATH := ../sdk
 
 all: build
 
-build: jump.txt copy.txt
+build: jump.txt copy.txt movb.txt
 
 clean:
 	$(RM) *.bin
