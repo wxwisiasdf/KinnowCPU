@@ -130,8 +130,22 @@ module limn2600_Core
         input [31:0] data // Data to write
     );
         // Check docs/isa.txt "Shortcuts - Trans size" for an explanation
-        $display("%m: Write aligned size=%0d,mask=0x%h", (1 << (~trans_size)) * 8, (1 << ((1 << (~trans_size)) * 8)) - 1);
-        memio_aligned_write_mask = (ramdata & ~(((1 << ((1 << (~trans_size)) * 8)) - 1) << ((addr & ((1 << (~trans_size)) - 1)) * 8))) | ((data & ((1 << ((1 << (~trans_size)) * 8)) - 1)) << ((addr & ((1 << (~trans_size)) - 1)) * 8));
+        // TODO: This "optimization" might be broken, also it's unreadable wtf
+        $display("%m: Write aligned size=%0d,mask=0x%h", (1 << size) * 8, (1 << ((1 << size) * 8)) - 1);
+        case(size)
+        2'b11: begin
+            memio_aligned_write_mask <= 32'h0;
+            end
+        2'b10: begin
+            memio_aligned_write_mask <= ramdata;
+            end
+        2'b01: begin
+            memio_aligned_write_mask <= (ramdata & (32'hFFFF << ((addr & 1) * 16))) >> ((addr & 1) * 16);
+            end
+        2'b00: begin
+            memio_aligned_write_mask <= (ramdata & (32'hFF << ((addr & 3) * 8))) >> ((addr & 3) * 8);
+            end
+        endcase
     endfunction
 
     function void raise_exception(
@@ -165,7 +179,7 @@ module limn2600_Core
         input [4:0] read_reg, // Register to place read value into
         input [1:0] size // Size of transfer
     );
-        trans_size <= size;
+        trans_size <= ~size;
         read_regno <= opreg1;
         memio_addr <= read_addr;
         addr <= read_addr;
@@ -178,7 +192,7 @@ module limn2600_Core
         input [31:0] data, // Data to write
         input [1:0] size // Size of transfer
     );
-        trans_size <= size;
+        trans_size <= ~size;
         write_value <= data;
         data_out <= data;
         memio_addr <= write_addr;
@@ -340,8 +354,18 @@ module limn2600_Core
             cs <= 1;
             if(rdy) begin // Appropriately apply masks
                 // Check docs/isa.txt "Shortcuts - Trans size" for an explanation
-                $display("%m: Read size=%0d,mask=0x%h,shift=%0d,f_data=0x%h", (1 << (~trans_size)) * 8, (1 << ((1 << (~trans_size)) * 8)) - 1, (memio_addr & ((1 << (~trans_size)) - 1)) * ((1 << (~trans_size)) * 8), data_in & ((1 << ((1 << (~trans_size)) * 8)) - 1));
-                regs[read_regno] <= (data_in & ((1 << ((1 << (~trans_size)) * 8)) - 1)) << ((memio_addr & ((1 << (~trans_size)) - 1)) * ((1 << (~trans_size)) * 8));
+                case(trans_size)
+                2'b11: begin end
+                2'b10: begin
+                    regs[read_regno] <= data_in;
+                    end
+                2'b01: begin
+                    regs[read_regno] <= (data_in & (32'hFFFF << ((memio_addr & 1) * 16))) >> ((memio_addr & 1) * 16);
+                    end
+                2'b00: begin
+                    regs[read_regno] <= (data_in & (32'hFF << ((memio_addr & 3) * 8))) >> ((memio_addr & 3) * 8);
+                    end
+                endcase
                 // We already read the data by now, so send the data for the next cycle
                 // telling the RAM to prepare for sending out insns
                 state <= S_FETCH;
@@ -362,7 +386,7 @@ module limn2600_Core
                 state <= S_WRITE;
                 // Appropriately apply masks
                 if(1) begin // Aligned access
-                    if(trans_size == 2'b01) begin // 4-bytes, 1-per-cell
+                    if(trans_size == 2'b10) begin // 4-bytes, 1-per-cell
                         $display("%m: prewrite long");
                         we <= 1; // Since data_width == 32 we simply send the whole thing
                         data_out <= write_value;
@@ -504,7 +528,6 @@ module limn2600_Core
                     prepare_read(regs[opreg2] + ({ 16'h0, imm16} << (~mov_simple_tsz)), opreg1, mov_simple_tsz);
                     end
                 6'b??_?010: begin // MOV [ra + imm16], rb
-                    trans_size <= mov_simple_tsz;
                     if(inst_lo[5] == 1) begin // Move register to memory
                         $display("%m: mov(16)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 } << (~mov_simple_tsz), opreg2, mov_simple_tsz);
                         prepare_write(regs[opreg1] + ({ 16'h0, imm16} << (~mov_simple_tsz)), regs[opreg2], mov_simple_tsz);
