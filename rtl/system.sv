@@ -20,13 +20,16 @@ module limn2600_System
     wire [31:0] data_from_ram;
     wire irq;
     wire rdy;
-    wire cs;
+    wire ce;
+    wire oe;
+
+    assign oe = 1;
 
     limn2600_CPU CPU(
         .rst(rst),
         .clk(clk),
         .we(we),
-        .cs(cs),
+        .ce(ce),
         .irq(irq),
         .rdy(rdy),
         .addr(addr),
@@ -38,7 +41,8 @@ module limn2600_System
         .rst(rst),
         .clk(clk),
         .we(we),
-        .cs(cs),
+        .ce(ce),
+        .oe(oe),
         .rdy(rdy),
         .addr(addr),
         .data_in(data_from_cpu),

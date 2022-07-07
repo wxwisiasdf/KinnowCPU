@@ -72,7 +72,7 @@ module limn2600_Core
     output reg [31:0] data_out,
     input rdy, // Whetever we can fetch instructions
     output reg we, // Write-Enable (1 = we want to write, 0 = we want to read)
-    output reg cs // Command-State (1 = memory commands active, 0 = memory commands ignored)
+    output reg ce // Command-State (1 = memory commands active, 0 = memory commands ignored)
 );
     // Perform an ALU op
     function [31:0] alu_op_result(
@@ -158,7 +158,7 @@ module limn2600_Core
         ctl_regs[CREG_ERS] <= ctl_regs[CREG_RS];
         // Switch to fetch state
         state <= S_FETCH;
-        cs <= 1;
+        ce <= 1;
         addr <= ctl_regs[CREG_EVEC];
     endfunction
 
@@ -169,7 +169,7 @@ module limn2600_Core
         $display("%m: Branched to 0x%h", new_pc);
         pc <= new_pc;
         state <= S_FETCH;
-        cs <= 1;
+        ce <= 1;
         addr <= new_pc;
     endfunction
 
@@ -184,7 +184,7 @@ module limn2600_Core
         memio_addr <= read_addr;
         addr <= read_addr;
         state <= S_READ;
-        cs <= 1;
+        ce <= 1;
     endfunction
 
     function void prepare_write(
@@ -198,13 +198,13 @@ module limn2600_Core
         memio_addr <= write_addr;
         addr <= write_addr;
         state <= S_PREWRITE;
-        cs <= 1;
+        ce <= 1;
         // Optimization for 32-bit aligned writes, we can just write the value and immediately
         // return back to fetching
         if(size == 2'b01 && (write_addr & 32'h3) == 32'h0) begin
             we <= 1; // Enable since there is some delay
             data_out <= write_value;
-            state <= S_FETCH; // We already enabled CS, and WE will be reset to 0 on the next fetch
+            state <= S_FETCH; // We already enabled ce, and WE will be reset to 0 on the next fetch
             $display("%m: (aligned long) write_value=0x%h,memio_addr=0x%h,data_in=0x%h", write_value, memio_addr, data_in);
         end
     endfunction
@@ -330,7 +330,7 @@ module limn2600_Core
             pc <= 32'hFFFE0000;
             data_out <= 0;
             state <= S_FETCH; // Tell first fetch cycle so we can get a RDY sooner
-            cs <= 1;
+            ce <= 1;
             we <= 0;
             addr <= 32'hFFFE0000;
             tlb_we <= 0;
@@ -346,12 +346,12 @@ module limn2600_Core
     // Fetch
     always @(posedge clk) begin
         // Continous assignments, can be overriden by below statments
-        cs <= 0;
+        ce <= 0;
         we <= 0;
         // Read a from the SRAM (1/1 cycles)
         if(state == S_READ) begin
             $display("%m: S_READ");
-            cs <= 1;
+            ce <= 1;
             if(rdy) begin // Appropriately apply masks
                 // Check docs/isa.txt "Shortcuts - Trans size" for an explanation
                 case(trans_size)
@@ -369,7 +369,7 @@ module limn2600_Core
                 // We already read the data by now, so send the data for the next cycle
                 // telling the RAM to prepare for sending out insns
                 state <= S_FETCH;
-                cs <= 1; // Notify RAM to send data, quickly
+                ce <= 1; // Notify RAM to send data, quickly
                 addr <= fetch_addr;
             end
         // Fetch the element from SRAM with 32-bits per unit of data
@@ -380,7 +380,7 @@ module limn2600_Core
             // Prewrite is in charge of reading the value and then writting it back with the desired offset
             // so we can support unaligned accesses
             $display("%m: S_PREWRITE");
-            cs <= 1;
+            ce <= 1;
             if(rdy) begin
                 we <= 1; // Enable since there is some delay
                 state <= S_WRITE;
@@ -390,7 +390,7 @@ module limn2600_Core
                         $display("%m: prewrite long");
                         we <= 1; // Since data_width == 32 we simply send the whole thing
                         data_out <= write_value;
-                        state <= S_FETCH; // We already enabled CS, and WE will be reset to 0 on the next fetch
+                        state <= S_FETCH; // We already enabled ce, and WE will be reset to 0 on the next fetch
                     end else begin
                         write_value <= memio_aligned_write_mask(trans_size, memio_addr, data_in, write_value);
                     end
@@ -398,7 +398,7 @@ module limn2600_Core
                     $display("%m: exception unaligned write!");
                     raise_exception(ECAUSE_UNALIGNED);
                     state <= S_FETCH;
-                    cs <= 1;
+                    ce <= 1;
                     addr <= ctl_regs[CREG_EVEC];
                 end
                 $display("%m: write_value=0x%h,memio_addr=0x%h,data_in=0x%h", write_value, memio_addr, data_in);
@@ -408,32 +408,32 @@ module limn2600_Core
         // (2/2 cycles)
         end else if(state == S_WRITE) begin
             $display("%m: S_WRITE");
-            cs <= 1;
+            ce <= 1;
             we <= 1; // Write the value, then return to fetching
             data_out <= write_value;
             if(rdy) begin
                 $display("%m: data_out=0x%h,write_value=0x%h,addr=0x%h", data_out, write_value, addr);
                 state <= S_FETCH;
                 we <= 0;
-                cs <= 1; // Notify RAM to send data, quickly
+                ce <= 1; // Notify RAM to send data, quickly
                 addr <= fetch_addr;
             end
         end else if(state == S_FETCH) begin
             $display("%m: (Fetch) Fetching,rdy=%b", rdy);
-            cs <= 1; // Read from memory
+            ce <= 1; // Read from memory
             addr <= fetch_addr;
             // Once we can fetch instructions we save the state, but only if
             // we aren't overwriting something being used by the executor!
             if(rdy) begin
                 $display("%m: (Fetch) Fetched inst=%b,fetch=0x%h", data_in, fetch_addr);
                 state <= S_EXECUTE;
-                cs <= 0; // Disable commands
+                ce <= 0; // Disable commands
             end
         // Execution thread
         end else if(state == S_EXECUTE) begin
             $display("%m: Execution data_in=0x%h<%b>,insn=0x%h,pc=0x%h", data_in, data_in, execute_inst, pc);
             state <= S_FETCH;
-            cs <= 1; // Notify RAM to send data, quickly
+            ce <= 1; // Notify RAM to send data, quickly
             addr <= fetch_addr;
             pc <= pc + 4; // By default advance one instruction, can of course be overriden because this is combinatorial ;)
             casez(inst_lo)
@@ -683,14 +683,14 @@ module limn2600_Core
             ctl_regs[CREG_TBHI] <= tlb_data_out; // TODO: Is this correct?
             ctl_regs[CREG_TBLO] <= tlb_data_out;
             state <= S_FETCH;
-            cs <= 1;
+            ce <= 1;
             addr <= pc;
         end else if(state == S_GET_TLB_FN) begin
             // TODO: RDY for TLB
             // By now data from the TLB has arrived, negative values will be given for indicating NOT-FOUND
             ctl_regs[CREG_TBINDEX] <= tlb_data_out;
             state <= S_FETCH;
-            cs <= 1;
+            ce <= 1;
             addr <= pc;
         end
     end
@@ -724,7 +724,7 @@ module limn2600_CPU
     output [31:0] data_out,
     input rdy, // Whetever we can fetch instructions
     output we, // Write-Enable (1 = we want to write, 0 = we want to read)
-    output cs // Command-State (1 = memory commands active, 0 = memory commands ignored)
+    output ce // Command-State (1 = memory commands active, 0 = memory commands ignored)
 );
 
     limn2600_Core core1(
@@ -736,7 +736,7 @@ module limn2600_CPU
         .data_out(data_out),
         .rdy(rdy),
         .we(we),
-        .cs(cs)
+        .ce(ce)
     );
 /*
     generate
@@ -751,7 +751,7 @@ module limn2600_CPU
                 .data_out(data_out),
                 .rdy(rdy),
                 .we(we),
-                .cs(cs)
+                .ce(ce)
             );
         end
     endgenerate
