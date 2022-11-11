@@ -5,51 +5,49 @@ module limn2600_ALU
     input rst,
     input clk,
     input [2:0] op,
-    input [31:0] in0,
-    input [31:0] in1,
-    output reg [31:0] out
+    input [31:0] a,
+    input [31:0] b,
+    output reg [31:0] c
 );
     always @(posedge clk) begin
         casez(op)
-            3'b111: begin
+            3'b111: begin // ADD
                 $display("%m: add");
-                out <= in0 + in0;
+                c = a + b;
                 end
-            3'b110: begin
+            3'b110: begin // SUB
                 $display("%m: sub");
-                out <= in0 - in1;
+                c = a - b;
                 end
-            3'b011: begin
+            3'b011: begin // AND
                 $display("%m: and");
-                out <= in0 & in1;
+                c = a & b;
                 end
-            3'b010: begin
+            3'b010: begin // XOR
                 $display("%m: xor");
-                out <= in0 ^ in1;
+                c = a ^ b;
                 end
-            3'b001: begin
+            3'b001: begin // OR
                 $display("%m: or");
-                out <= in0 | in1;
+                c = a | b;
                 end
-            3'b101: begin
+            3'b101: begin // SLT
                 $display("%m: slt");
-                out = { 31'h0, in0 < in1 };
+                c = { 31'h0, a < b };
                 end
-            3'b100: begin
+            3'b100: begin // SLTS
                 $display("%m: slts");
                 // tmp32 is positive, register is negative
-                if((in0 & 32'h80000000) != 0 && in1 & 32'h80000000 == 0) begin
-                    out <= 1;
+                if((a & 32'h80000000) != 0 && (b & 32'h80000000) == 0) begin
+                    c = 1;
                 // tmp32 is negative, register is positive
-                end else if((in0& 32'h80000000) == 0 && in1 & 32'h80000000 != 0) begin
-                    out <= 0;
+                end else if((a & 32'h80000000) == 0 && (b & 32'h80000000) != 0) begin
+                    c = 0;
                 end else begin
-                    out = { 31'h0, in0 < in1 };
+                    c = { 31'h0, a < b };
                 end
                 end
-            3'b000: begin
-                out <= 0;
-                end
+            default: begin end
         endcase
     end
 endmodule
@@ -74,53 +72,6 @@ module limn2600_Core
     output reg we, // Write-Enable (1 = we want to write, 0 = we want to read)
     output reg ce // Command-State (1 = memory commands active, 0 = memory commands ignored)
 );
-    // Perform an ALU op
-    function [31:0] alu_op_result(
-        input [2:0] op,
-        input [31:0] a,
-        input [31:0] b
-    );
-        casez(op)
-            3'b111: begin // ADD
-                $display("%m: add");
-                alu_op_result = a + b;
-                end
-            3'b110: begin // SUB
-                $display("%m: sub");
-                alu_op_result = a - b;
-                end
-            3'b011: begin // AND
-                $display("%m: and");
-                alu_op_result = a & b;
-                end
-            3'b010: begin // XOR
-                $display("%m: xor");
-                alu_op_result = a ^ b;
-                end
-            3'b001: begin // OR
-                $display("%m: or");
-                alu_op_result = a | b;
-                end
-            3'b101: begin // SLT
-                $display("%m: slt");
-                alu_op_result = { 31'h0, a < b };
-                end
-            3'b100: begin // SLTS
-                $display("%m: slts");
-                // tmp32 is positive, register is negative
-                if((a & 32'h80000000) != 0 && (b & 32'h80000000) == 0) begin
-                    alu_op_result = 1;
-                // tmp32 is negative, register is positive
-                end else if((a & 32'h80000000) == 0 && (b & 32'h80000000) != 0) begin
-                    alu_op_result = 0;
-                end else begin
-                    alu_op_result = { 31'h0, a < b };
-                end
-                end
-            default: begin end
-        endcase
-    endfunction
-
     // Do the required masking for reading and writing back RAM values
     // Assumes address if already aligned to the 32-bit boundary
     function [31:0] memio_aligned_write_mask(
@@ -324,6 +275,26 @@ module limn2600_Core
         .data_out(tlb_data_out)
     );
 
+    wire [31:0] alu_imm_out;
+    limn2600_ALU alu_imm(
+        .rst(rst),
+        .clk(clk),
+        .op(inst_lo[5:3]),
+        .a(regs[opreg2]),
+        .b({ 16'b0, imm16 }),
+        .c(alu_imm_out)
+    );
+
+    wire [31:0] alu_reg_out;
+    limn2600_ALU alu_reg(
+        .rst(rst),
+        .clk(clk),
+        .op(inst_hi[4:2]),
+        .a(regs[opreg2]),
+        .b(do_alu_shift(regs[opreg3], { 27'h0, imm5_lo }, opg1_instmode)),
+        .c(alu_reg_out)
+    );
+
     always @(posedge clk) begin
         if(rst) begin
             $display("%m: Reset");
@@ -520,7 +491,7 @@ module limn2600_Core
                         regs[opreg1] <= regs[opreg2] | ({ 16'b0, imm16 } << 16);
                         // TODO: Fuse OPS for example LA comes as LUI+ORI
                     end else begin // Rest of ops
-                        regs[opreg1] <= alu_op_result(inst_lo[5:3], regs[opreg2], { 16'b0, imm16 });
+                        regs[opreg1] <= alu_imm_out;
                     end
                     end
                 6'b1?_?011: begin // MOV rd, [rs + imm16]
@@ -553,7 +524,7 @@ module limn2600_Core
                             prepare_read(regs[opreg2] + (do_alu_shift(regs[opreg3], { 27'h0, imm5_lo }, opg1_instmode) << (~mov_comp_tsz)), opreg1, mov_comp_tsz);
                             end
                         default: begin // Assume this is a general ALU OP and perform a normal operation
-                            regs[opreg1] <= alu_op_result(inst_hi[4:2], regs[opreg2], do_alu_shift(regs[opreg3], { 27'h0, imm5_lo }, opg1_instmode));
+                            regs[opreg1] <= alu_reg_out;
                             end
                     endcase
                     end
