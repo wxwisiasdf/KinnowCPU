@@ -1,3 +1,6 @@
 [submodule "sdk"]
 	path = sdk
 	url = https://github.com/limnarch/sdk
+[submodule "bios"]
+	path = bios
+	url = https://github.com/limnarch/a3x
