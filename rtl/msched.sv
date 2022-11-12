@@ -74,7 +74,6 @@ module limn2600_MemorySched
     always @(posedge clk) begin
         if(rst) begin
             write_fetched <= 0;
-            curr_client_cmd <= 0;
             for(i = 0; i < 32; i++) begin
                 cmds[i].enable <= 0;
             end
@@ -116,6 +115,9 @@ module limn2600_MemorySched
             end
         end else begin // Advance until a non-enabled command is found
             curr_client_cmd <= curr_client_cmd + 1;
+        end
+        if(rst) begin
+            curr_client_cmd <= 1;
         end
     end
 
@@ -168,6 +170,9 @@ module limn2600_MemorySched
             end
         end else begin // Advance until an enabled command is found
             curr_exec_cmd <= curr_exec_cmd + 1;
+        end
+        if(rst) begin
+            curr_exec_cmd <= 0;
         end
         $display("%m: curr_exec_cmd=%d,curr_client_cmd=%d", curr_exec_cmd, curr_client_cmd);
     end

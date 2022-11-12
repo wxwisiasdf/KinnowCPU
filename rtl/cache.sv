@@ -64,7 +64,7 @@ module limn2600_cache
             data_out <= { 1'b1, 31'h0 }; // Negative value
             for(i = 0; i < NUM_ENTRIES; i++) begin
                 if(cache[i] == data_in) begin
-                    data_out <= i[31:0];
+                    data_out <= i[DATA_WIDTH - 1:0];
                 end
             end
         end else begin
