@@ -1,3 +1,6 @@
+// TODO: Scheduler will start discarding things once queue is full
+// TODO: Writes won't be reflected on reads thata re too close near each other!
+
 ///////////////////////////////////////////////////////////////////////////////
 //
 // Limn2600 Memory Scheduler
@@ -19,12 +22,15 @@ module limn2600_MemorySched
     input [1:0] client_read_size,
     input client_read_enable,
     output client_read_rdy,
+    output [31:0] client_read_addr_in,
 
     input [31:0] client_write_addr,
     input [31:0] client_write_value,
     input [1:0] client_write_size,
     input client_write_enable,
-    output client_write_rdy
+    output client_write_rdy,
+
+    output full
 );
     typedef struct packed {
         bit write;
@@ -73,7 +79,6 @@ module limn2600_MemorySched
 
     always @(posedge clk) begin
         if(rst) begin
-            write_fetched <= 0;
             for(i = 0; i < 32; i++) begin
                 cmds[i].enable <= 0;
             end
@@ -115,6 +120,13 @@ module limn2600_MemorySched
             end
         end else begin // Advance until a non-enabled command is found
             curr_client_cmd <= curr_client_cmd + 1;
+
+            full <= 1; // Check if we're full or not
+            for(i = 0; i < 32; i++) begin
+                if(!cmds[i].enable) begin
+                    full <= 0;
+                end
+            end
         end
         if(rst) begin
             curr_client_cmd <= 1;
@@ -130,6 +142,7 @@ module limn2600_MemorySched
         if(cmds[curr_exec_cmd].enable && curr_exec_cmd != curr_client_cmd) begin
             if(cmds[curr_exec_cmd].write) begin // Write
                 if(cmds[curr_exec_cmd].size == 2'b11) begin // 32 bits, instantly-write
+                    $display("%m: write-32 0x%0x=0x%0x", cmds[curr_exec_cmd].addr, cmds[curr_exec_cmd].value);
                     ram_ce <= 1;
                     ram_we <= 1;
                     ram_addr <= cmds[curr_exec_cmd].addr;
@@ -139,6 +152,7 @@ module limn2600_MemorySched
                     end
                 end else begin // 8 and 16 bits
                     if(!write_fetched) begin // Obtain the value from the RAM first
+                        $display("%m: write-r 0x%0x=0x%0x", cmds[curr_exec_cmd].addr, cmds[curr_exec_cmd].value);
                         ram_ce <= 1;
                         ram_we <= 0;
                         ram_addr <= cmds[curr_exec_cmd].addr;
@@ -147,6 +161,7 @@ module limn2600_MemorySched
                             write_fetched <= 1;
                         end
                     end else begin // After obtaining the value from read, write it back
+                        $display("%m: write-w 0x%0x=0x%0x", cmds[curr_exec_cmd].addr, cmds[curr_exec_cmd].value);
                         ram_ce <= 1;
                         ram_we <= 1;
                         ram_addr <= cmds[curr_exec_cmd].addr;
@@ -164,15 +179,17 @@ module limn2600_MemorySched
                 if(ram_rdy) begin
                     cmds[curr_exec_cmd].enable = 0;
                     client_read_value <= ram_data_in;
+                    client_read_addr_in <= cmds[curr_exec_cmd].addr;
                     client_read_rdy <= 1;
                     $display("%m: read 0x%0x=0x%0x", cmds[curr_exec_cmd].addr, ram_data_in);
                 end
             end
-        end else begin // Advance until an enabled command is found
+        end else if(curr_exec_cmd != curr_client_cmd) begin // Advance until an enabled command is found
             curr_exec_cmd <= curr_exec_cmd + 1;
         end
         if(rst) begin
             curr_exec_cmd <= 0;
+            write_fetched <= 0;
         end
         $display("%m: curr_exec_cmd=%d,curr_client_cmd=%d", curr_exec_cmd, curr_client_cmd);
     end
