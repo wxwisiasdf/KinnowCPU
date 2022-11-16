@@ -37,13 +37,13 @@ module limn2600_SRAM
                 end else if(addr == 32'hF8000044) begin
                     $display("%m: serial_emul WRITE 0x%h<%b> %c", data_in[7:0], data_in[7:0], data_in[7:0]);
                 end else if(addr[31:16] == 16'hFFFE) begin
-                    $display("%m: ROM_write [shadow] data_in=0x%8h=>addr=0x%8h", data_in, addr);
+                    $display("%m: ROM_write [shadow] data_in=0x%8h=>addr=0x%8h", rom[addr[16:2]], addr);
                 end else if(addr[31:16] == 16'h0000) begin
                     ram[addr[19:2]] <= data_in;
-                    $display("%m: SRAM_write data_in=0x%8h=>addr=0x%8h", data_in, addr);
+                    $display("%m: SRAM_write data_in=0x%8h=>addr=0x%8h", ram[addr[19:2]], addr);
                 end else if(addr[31:16] == 16'hF800) begin
                     nvram[addr[15:2]] <= data_in;
-                    $display("%m: NVRAM_write data_in=0x%8h=>addr=0x%8h", data_in, addr);
+                    $display("%m: NVRAM_write data_in=0x%8h=>addr=0x%8h", nvram[addr[15:2]], addr);
                 end else begin
 
                 end
@@ -58,13 +58,13 @@ module limn2600_SRAM
                     data_out <= 32'hFFFF;
                 end else if(addr[31:16] == 16'hFFFE) begin
                     data_out <= rom[addr[16:2]];
-                    $display("%m: SROM_read [shadow] data_out=0x%8h=>addr=0x%8h", data_out, addr);
+                    $display("%m: ROM_read [shadow] data_out=0x%8h=>addr=0x%8h", rom[addr[16:2]], addr);
                 end else if(addr[31:16] == 16'h0000) begin
                     data_out <= ram[addr[19:2]];
-                    $display("%m: SRAM_read data_out=0x%8h=>addr=0x%8h", data_out, addr);
+                    $display("%m: SRAM_read data_out=0x%8h=>addr=0x%8h", ram[addr[19:2]], addr);
                 end else if(addr[31:16] == 16'hF800) begin
                     data_out <= nvram[addr[15:2]];
-                    $display("%m: NVRAM_read data_out=0x%8h=>addr=0x%8h", data_out, addr);
+                    $display("%m: NVRAM_read data_out=0x%8h=>addr=0x%8h", nvram[addr[15:2]], addr);
                 end else begin
 
                 end
@@ -78,6 +78,10 @@ module limn2600_SRAM
         $display("%m: ram_size=%0dKB,data_width=%0d bits", ((DATA_WIDTH / 8) * RAM_SIZE) / 1000, DATA_WIDTH);
         $display("%m: rom_size=%0dKB,data_width=%0d bits", ((DATA_WIDTH / 8) * ROM_SIZE) / 1000, DATA_WIDTH);
         $readmemh("../rom.txt", rom);
+        for(i = 0; i < ROM_SIZE; i++) begin
+            $display("%h: %8h", (32'hFFFE << 16) | (i << 2), rom[i]);
+        end
+        
         for(i = 0; i < RAM_SIZE; i++) begin
             ram[i] = 32'hFFFFFFFF;
         end

@@ -10,7 +10,7 @@ module limn2600_MemorySched
 ( // Interface
     input rst,
     input clk,
-    output reg [31:0] ram_addr,
+    output [31:0] ram_addr,
     input [31:0] ram_data_in,
     output reg [31:0] ram_data_out,
     input ram_rdy,
@@ -18,7 +18,7 @@ module limn2600_MemorySched
     output reg ram_ce, // Command-enable
 
     input [31:0] client_read_addr,
-    output reg [31:0] client_read_value,
+    output [31:0] client_read_value,
     input [1:0] client_read_size,
     input client_read_enable,
     output client_read_rdy,
@@ -30,7 +30,8 @@ module limn2600_MemorySched
     input client_write_enable,
     output client_write_rdy,
 
-    output full
+    output full,
+    input flush
 );
     typedef struct packed {
         bit write;
@@ -49,6 +50,9 @@ module limn2600_MemorySched
     reg [31:0] write_fetched_data;
 
     integer i;
+
+    assign ram_addr = cmds[curr_exec_cmd].addr;
+    assign client_read_value = ram_data_in;
 
     // Do the required masking for reading and writing back RAM values
     // Assumes address if already aligned to the 32-bit boundary
@@ -83,6 +87,13 @@ module limn2600_MemorySched
                 cmds[i].enable <= 0;
             end
         end
+        if(flush) begin
+            for(i = 0; i < 32; i++) begin
+                if(!cmds[i].write) begin
+                    cmds[i].enable <= 0;
+                end
+            end
+        end
     end
 
     // Obtain commands from the client and add them to the queue
@@ -107,7 +118,7 @@ module limn2600_MemorySched
                 end else begin
                     curr_client_cmd <= curr_client_cmd + 1;
                 end
-                $display("%m: (read command) 0x%0x=0x%0x", client_read_addr, client_read_value);
+                $display("%m: (read command) 0x%0x", client_read_addr);
             end else if(client_write_enable) begin
                 cmds[curr_client_cmd].enable <= 1;
                 cmds[curr_client_cmd].write <= 1;
@@ -128,7 +139,7 @@ module limn2600_MemorySched
                 end
             end
         end
-        if(rst) begin
+        if(rst || flush) begin
             curr_client_cmd <= 1;
         end
     end
@@ -145,7 +156,6 @@ module limn2600_MemorySched
                     $display("%m: write-32 0x%0x=0x%0x", cmds[curr_exec_cmd].addr, cmds[curr_exec_cmd].value);
                     ram_ce <= 1;
                     ram_we <= 1;
-                    ram_addr <= cmds[curr_exec_cmd].addr;
                     ram_data_out <= cmds[curr_exec_cmd].value;
                     if(ram_rdy) begin
                         cmds[curr_exec_cmd].enable <= 0;
@@ -155,7 +165,6 @@ module limn2600_MemorySched
                         $display("%m: write-r 0x%0x=0x%0x", cmds[curr_exec_cmd].addr, cmds[curr_exec_cmd].value);
                         ram_ce <= 1;
                         ram_we <= 0;
-                        ram_addr <= cmds[curr_exec_cmd].addr;
                         if(ram_rdy) begin
                             write_fetched_data <= ram_data_in;
                             write_fetched <= 1;
@@ -164,7 +173,6 @@ module limn2600_MemorySched
                         $display("%m: write-w 0x%0x=0x%0x", cmds[curr_exec_cmd].addr, cmds[curr_exec_cmd].value);
                         ram_ce <= 1;
                         ram_we <= 1;
-                        ram_addr <= cmds[curr_exec_cmd].addr;
                         ram_data_out <= memio_aligned_write_mask(cmds[curr_exec_cmd].size, cmds[curr_exec_cmd].addr, write_fetched_data, cmds[curr_exec_cmd].value);
                         if(ram_rdy) begin
                             write_fetched <= 0;
@@ -175,10 +183,8 @@ module limn2600_MemorySched
             end else begin // Read
                 ram_ce <= 1;
                 ram_we <= 0;
-                ram_addr <= cmds[curr_exec_cmd].addr;
                 if(ram_rdy) begin
                     cmds[curr_exec_cmd].enable = 0;
-                    client_read_value <= ram_data_in;
                     client_read_addr_in <= cmds[curr_exec_cmd].addr;
                     client_read_rdy <= 1;
                     $display("%m: read 0x%0x=0x%0x", cmds[curr_exec_cmd].addr, ram_data_in);
@@ -190,6 +196,10 @@ module limn2600_MemorySched
         if(rst) begin
             curr_exec_cmd <= 0;
             write_fetched <= 0;
+        end else if(flush) begin // Only change execution when writing to a memory area
+            if(write_fetched == 0) begin
+                curr_exec_cmd <= 0;
+            end
         end
         $display("%m: curr_exec_cmd=%d,curr_client_cmd=%d", curr_exec_cmd, curr_client_cmd);
     end
