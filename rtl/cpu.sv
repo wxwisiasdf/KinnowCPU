@@ -426,6 +426,71 @@ module limn2600_Core
                         end
                     end
                     end
+                6'b10_0101: begin // BGT ra, [imm21]
+                    // Branch taken if it's bigger than 0 (signed comparison)
+                    if(regs[opreg1][31] == 0 && regs[opreg1] != 0) begin
+                        $display("%m: Branch taken!");
+                        if(imm21[20] == 1) begin // Negative
+                            $display("%m: bgt r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
+                            branch_to(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
+                        end else begin // Positive
+                            $display("%m: bgt r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
+                            branch_to(pc + ({ 12'h0, imm21[19:0] } << 2));
+                        end
+                    end
+                    end
+                6'b01_1101: begin // BGE ra, [imm21]
+                    // Branch taken if it's greater or equal to 0 (signed comparison)
+                    if(regs[opreg1][31] == 0) begin
+                        $display("%m: Branch taken!");
+                        if(imm21[20] == 1) begin // Negative
+                            $display("%m: bge r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
+                            branch_to(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
+                        end else begin // Positive
+                            $display("%m: bge r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
+                            branch_to(pc + ({ 12'h0, imm21[19:0] } << 2));
+                        end
+                    end
+                    end
+                6'b01_0101: begin // BLE ra, [imm21]
+                    // Branch taken if it's lesser or equal to 0 (signed comparison)
+                    if(regs[opreg1][31] == 1 || regs[opreg1] == 0) begin
+                        $display("%m: Branch taken!");
+                        if(imm21[20] == 1) begin // Negative
+                            $display("%m: ble r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
+                            branch_to(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
+                        end else begin // Positive
+                            $display("%m: ble r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
+                            branch_to(pc + ({ 12'h0, imm21[19:0] } << 2));
+                        end
+                    end
+                    end
+                6'b00_1101: begin // BPE ra, [imm21]
+                    // Branch taken if first bit is clear
+                    if(regs[opreg1][0] == 0) begin
+                        $display("%m: Branch taken!");
+                        if(imm21[20] == 1) begin // Negative
+                            $display("%m: bpe r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
+                            branch_to(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
+                        end else begin // Positive
+                            $display("%m: bpe r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
+                            branch_to(pc + ({ 12'h0, imm21[19:0] } << 2));
+                        end
+                    end
+                    end
+                6'b00_0101: begin // BPO ra, [imm21]
+                    // Branch taken if first bit is set
+                    if(regs[opreg1][0] == 0) begin
+                        $display("%m: Branch taken!");
+                        if(imm21[20] == 1) begin // Negative
+                            $display("%m: bpo r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
+                            branch_to(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
+                        end else begin // Positive
+                            $display("%m: bpo r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
+                            branch_to(pc + ({ 12'h0, imm21[19:0] } << 2));
+                        end
+                    end
+                    end
                 // ADDI [rd], [rd], [imm16]
                 // SUBI [rd], [rd], [imm16]
                 // SLTI [rd], [rd], [imm16]
