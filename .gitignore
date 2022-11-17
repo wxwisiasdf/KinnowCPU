@@ -4,3 +4,5 @@
 *.bin
 *.dot
 obj_dir/
+gcc/
+build-gcc/

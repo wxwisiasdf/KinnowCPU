@@ -30,7 +30,6 @@ module limn2600_Cache
     endfunction
 
     reg [DATA_WIDTH - 1:0] cache[0:NUM_ENTRIES - 1];
-
     always @(posedge clk) begin
         if(rst) begin
             $display("%m: Reset");

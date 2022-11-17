@@ -1,0 +1,1306 @@
+diff --git a/.vscode/settings.json b/.vscode/settings.json
+new file mode 100644
+index 00000000000..8ae04f229bd
+--- /dev/null
++++ b/.vscode/settings.json
+@@ -0,0 +1,20 @@
++{
++    "files.associations": {
++        "*.md": "lisp",
++        "*.inc": "cpp",
++        "string_view": "cpp",
++        "array": "cpp",
++        "bitset": "cpp",
++        "format": "cpp",
++        "ranges": "cpp",
++        "span": "cpp",
++        "stacktrace": "cpp",
++        "valarray": "cpp",
++        "regex": "cpp",
++        "initializer_list": "cpp",
++        "*.ipp": "cpp",
++        "hash_map": "cpp",
++        "hash_set": "cpp",
++        "utility": "cpp"
++    }
++}
+\ No newline at end of file
+diff --git a/config.sub b/config.sub
+index 38f3d037a78..b86e1dd8d71 100755
+--- a/config.sub
++++ b/config.sub
+@@ -1203,6 +1203,7 @@ case $cpu-$vendor in
+ 			| le32 | le64 \
+ 			| lm32 \
+ 			| loongarch32 | loongarch64 | loongarchx32 \
++			| limn2600 \
+ 			| m32c | m32r | m32rle \
+ 			| m5200 | m68000 | m680[012346]0 | m68360 | m683?2 | m68k \
+ 			| m6811 | m68hc11 | m6812 | m68hc12 | m68hcs12x \
+diff --git a/gcc/config.gcc b/gcc/config.gcc
+index b5eda046033..83aef126879 100644
+--- a/gcc/config.gcc
++++ b/gcc/config.gcc
+@@ -462,6 +462,11 @@ loongarch*-*-*)
+ 	extra_gcc_objs="loongarch-driver.o loongarch-cpu.o loongarch-opts.o loongarch-def.o"
+ 	extra_options="${extra_options} g.opt fused-madd.opt"
+ 	;;
++limn2600*)
++    cpu_type=limn2600
++	extra_modes=limn2600/limn2600-modes.def
++	target_has_targetm_common=no
++    ;;
+ nds32*)
+ 	cpu_type=nds32
+ 	extra_headers="nds32_intrinsic.h nds32_isr.h nds32_init.inc"
+@@ -2467,6 +2472,13 @@ loongarch*-*-linux*)
+ 	gcc_cv_initfini_array=yes
+ 	;;
+ 
++limn2600*-*-mintia* | limn2600*-*-elf*)
++	gas=yes
++	gnu_ld=yes
++	tm_file="${tm_file} elfos.h newlib-stdint.h"
++	tmake_file="${tmake_file}"
++	;;
++
+ mips*-*-netbsd*)			# NetBSD/mips, either endian.
+ 	target_cpu_default="MASK_ABICALLS"
+ 	tm_file="elfos.h ${tm_file} mips/elf.h ${nbsd_tm_file} mips/netbsd.h"
+diff --git a/gcc/config/limn2600/limn2600-protos.h b/gcc/config/limn2600/limn2600-protos.h
+new file mode 100644
+index 00000000000..ab5fa7a8d9d
+--- /dev/null
++++ b/gcc/config/limn2600/limn2600-protos.h
+@@ -0,0 +1,22 @@
++/* Prototypes for limn2600.cc functions used in the md file & elsewhere.
++   Copyright (C) 2009-2022 Free Software Foundation, Inc.
++
++This file is part of GCC.
++
++GCC is free software; you can redistribute it and/or modify
++it under the terms of the GNU General Public License as published by
++the Free Software Foundation; either version 3, or (at your option)
++any later version.
++
++GCC is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++GNU General Public License for more details.
++
++You should have received a copy of the GNU General Public License
++along with GCC; see the file COPYING3.  If not see
++<http://www.gnu.org/licenses/>.  */
++
++extern void  limn2600_expand_prologue (void);
++extern void  limn2600_expand_epilogue (void);
++extern int   limn2600_initial_elimination_offset (int, int);
+diff --git a/gcc/config/limn2600/limn2600.cc b/gcc/config/limn2600/limn2600.cc
+new file mode 100644
+index 00000000000..8fd663165f3
+--- /dev/null
++++ b/gcc/config/limn2600/limn2600.cc
+@@ -0,0 +1,503 @@
++/* Target Code for limn2600
++   Copyright (C) 2008-2022 Free Software Foundation, Inc.
++
++   This file is part of GCC.
++
++   GCC is free software; you can redistribute it and/or modify it
++   under the terms of the GNU General Public License as published
++   by the Free Software Foundation; either version 3, or (at your
++   option) any later version.
++
++   GCC is distributed in the hope that it will be useful, but WITHOUT
++   ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++   or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public
++   License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with GCC; see the file COPYING3.  If not see
++   <http://www.gnu.org/licenses/>.  */
++
++#define IN_TARGET_CODE 1
++
++#include "config.h"
++#include "system.h"
++#include "coretypes.h"
++#include "backend.h"
++#include "target.h"
++#include "rtl.h"
++#include "tree.h"
++#include "stringpool.h"
++#include "attribs.h"
++#include "df.h"
++#include "regs.h"
++#include "memmodel.h"
++#include "emit-rtl.h"
++#include "diagnostic-core.h"
++#include "output.h"
++#include "stor-layout.h"
++#include "varasm.h"
++#include "calls.h"
++#include "expr.h"
++#include "builtins.h"
++
++/* This file should be included last.  */
++#include "target-def.h"
++
++#define LOSE_AND_RETURN(msgid, x)       \
++  do                                    \
++  {                                     \
++    limn2600_operand_lossage(msgid, x); \
++    return;                             \
++  } while (0)
++
++/* Worker function for TARGET_RETURN_IN_MEMORY.  */
++static bool
++limn2600_return_in_memory(const_tree type, const_tree fntype ATTRIBUTE_UNUSED)
++{
++  const HOST_WIDE_INT size = int_size_in_bytes(type);
++  return size == -1 || size > UNITS_PER_WORD;
++}
++
++/* Define how to find the value returned by a function.
++   VALTYPE is the data type of the value (as a tree).
++   If the precise function being called is known, FUNC is its
++   FUNCTION_DECL; otherwise, FUNC is 0.
++   We always return values in A0  */
++static rtx
++limn2600_function_value(const_tree valtype,
++                        const_tree fntype_or_decl ATTRIBUTE_UNUSED,
++                        bool outgoing ATTRIBUTE_UNUSED)
++{
++  return gen_rtx_REG(TYPE_MODE(valtype), 7);
++}
++
++/* Define how to find the value returned by a library function.
++   We always return values in A0 */
++static rtx
++limn2600_libcall_value(machine_mode mode,
++                       const_rtx fun ATTRIBUTE_UNUSED)
++{
++  return gen_rtx_REG(mode, 7);
++}
++
++/* Handle TARGET_FUNCTION_VALUE_REGNO_P.
++   We always return values in A0  */
++static bool
++limn2600_function_value_regno_p(const unsigned int regno)
++{
++  return regno == 7;
++}
++
++/* Emit an error message when we're in an asm, and a fatal error for
++   "normal" insns.  Formatted output isn't easily implemented, since we
++   use output_operand_lossage to output the actual message and handle the
++   categorization of the error.  */
++
++static void
++limn2600_operand_lossage(const char *msgid, rtx op)
++{
++  debug_rtx(op);
++  output_operand_lossage("%s", msgid);
++}
++
++/* The PRINT_OPERAND_ADDRESS worker.  */
++
++static void
++limn2600_print_operand_address(FILE *file, machine_mode, rtx x)
++{
++  switch (GET_CODE(x))
++  {
++  case REG:
++    fprintf(file, "(%s)", reg_names[REGNO(x)]);
++    break;
++  default:
++    output_addr_const(file, x);
++    break;
++  }
++}
++
++/* The PRINT_OPERAND worker.  */
++
++static void
++limn2600_print_operand(FILE *file, rtx x, int code)
++{
++  rtx operand = x;
++
++  /* New code entries should just be added to the switch below.  If
++     handling is finished, just return.  If handling was just a
++     modification of the operand, the modified operand should be put in
++     "operand", and then do a break to let default handling
++     (zero-modifier) output the operand.  */
++  switch (code)
++  {
++  case 0:
++    /* No code, print as usual.  */
++    break;
++
++  default:
++    LOSE_AND_RETURN("invalid operand modifier letter", x);
++  }
++
++  /* Print an operand as without a modifier letter.  */
++  switch (GET_CODE(operand))
++  {
++  case REG:
++    if (REGNO(operand) > FIRST_PSEUDO_REGISTER)
++      internal_error("internal error: bad register: %d", REGNO(operand));
++    fprintf(file, "%s", reg_names[REGNO(operand)]);
++    return;
++
++  case MEM:
++    output_address(GET_MODE(XEXP(operand, 0)), XEXP(operand, 0));
++    return;
++
++  default:
++    /* No need to handle all strange variants, let output_addr_const
++       do it for us.  */
++    if (CONSTANT_P(operand))
++    {
++      output_addr_const(file, operand);
++      return;
++    }
++
++    LOSE_AND_RETURN("unexpected operand", x);
++  }
++}
++
++/* Per-function machine data.  */
++struct GTY(()) machine_function
++{
++  /* Number of bytes saved on the stack for callee saved registers.  */
++  int callee_saved_reg_size;
++  /* Number of bytes saved on the stack for local variables.  */
++  int local_vars_size;
++  /* The sum of 2 sizes: locals vars and padding byte for saving the
++   * registers.  Used in expand_prologue () and expand_epilogue().  */
++  int size_for_adjusting_sp;
++};
++
++/* Zero initialization is OK for all current fields.  */
++static struct machine_function *
++limn2600_init_machine_status(void)
++{
++  return ggc_cleared_alloc<machine_function>();
++}
++
++/* The TARGET_OPTION_OVERRIDE worker.  */
++static void
++limn2600_option_override(void)
++{
++  /* Set the per-function-data initializer.  */
++  init_machine_status = limn2600_init_machine_status;
++}
++
++/* Compute the size of the local area and the size to be adjusted by the
++ * prologue and epilogue.  */
++static void
++limn2600_compute_frame(void)
++{
++  /* For aligning the local variables.  */
++  int stack_alignment = STACK_BOUNDARY / BITS_PER_UNIT;
++  /* Padding needed for each element of the frame.  */
++  cfun->machine->local_vars_size = get_frame_size();
++  /* Align to the stack alignment.  */
++  int padding_locals = cfun->machine->local_vars_size % stack_alignment;
++  if (padding_locals)
++    padding_locals = stack_alignment - padding_locals;
++
++  cfun->machine->local_vars_size += padding_locals;
++
++  cfun->machine->callee_saved_reg_size = 0;
++
++  /* Save callee-saved registers.  */
++  for (int regno = 0; regno < FIRST_PSEUDO_REGISTER; regno++)
++    if (df_regs_ever_live_p(regno) && (!call_used_or_fixed_reg_p(regno)))
++      cfun->machine->callee_saved_reg_size += UNITS_PER_WORD;
++
++  cfun->machine->size_for_adjusting_sp =
++      crtl->args.pretend_args_size + cfun->machine->local_vars_size + (ACCUMULATE_OUTGOING_ARGS ? (HOST_WIDE_INT)crtl->outgoing_args_size : 0);
++}
++
++void limn2600_expand_prologue(void)
++{
++  rtx insn;
++
++  limn2600_compute_frame();
++
++  if (flag_stack_usage_info)
++    current_function_static_stack_size = cfun->machine->size_for_adjusting_sp;
++
++  if (cfun->machine->callee_saved_reg_size)
++  {
++    /* Save callee-saved registers.  */
++    rtx reg = gen_rtx_REG(SImode, 1);
++    insn = emit_move_insn(reg, hard_frame_pointer_rtx);
++    RTX_FRAME_RELATED_P(insn) = 1;
++    rtx off_reg = gen_rtx_REG(SImode, 2);
++    insn = emit_move_insn(off_reg, gen_int_mode(UNITS_PER_WORD, SImode));
++    RTX_FRAME_RELATED_P(insn) = 1;
++
++    for (int regno = 0; regno < FIRST_PSEUDO_REGISTER; regno++)
++      if (df_regs_ever_live_p(regno) && !call_used_or_fixed_reg_p(regno))
++      {
++        insn = emit_move_insn(gen_rtx_MEM(SImode, reg), gen_rtx_REG(SImode, regno));
++        RTX_FRAME_RELATED_P(insn) = 1;
++        insn = emit_insn(gen_subsi3(reg, reg, off_reg));
++        RTX_FRAME_RELATED_P(insn) = 1;
++      }
++  }
++
++  if (cfun->machine->size_for_adjusting_sp > 0)
++  {
++    int i = cfun->machine->size_for_adjusting_sp;
++    insn = emit_insn(gen_subsi3(stack_pointer_rtx,
++                                stack_pointer_rtx,
++                                gen_int_mode(i, SImode)));
++    RTX_FRAME_RELATED_P(insn) = 1;
++  }
++}
++
++void limn2600_expand_epilogue(void)
++{
++  rtx insn;
++  if (cfun->machine->callee_saved_reg_size != 0)
++  {
++    /* Frame[-Save Area] */
++    rtx reg = gen_rtx_REG(Pmode, 1);
++    insn = emit_move_insn(reg, hard_frame_pointer_rtx);
++    RTX_FRAME_RELATED_P(insn) = 1;
++    insn = emit_insn(gen_subsi3(reg, reg, gen_int_mode(cfun->machine->callee_saved_reg_size, SImode)));
++    RTX_FRAME_RELATED_P(insn) = 1;
++
++    rtx off_reg = gen_rtx_REG(SImode, 2);
++    insn = emit_move_insn(off_reg, gen_int_mode(UNITS_PER_WORD, SImode));
++    RTX_FRAME_RELATED_P(insn) = 1;
++    /* Restore saved registers */
++    for (int regno = FIRST_PSEUDO_REGISTER; regno-- > 0;)
++      if (!call_used_or_fixed_reg_p(regno) && df_regs_ever_live_p(regno))
++      {
++        insn = emit_move_insn(gen_rtx_REG(SImode, regno), gen_rtx_MEM(SImode, reg));
++        RTX_FRAME_RELATED_P(insn) = 1;
++        insn = emit_insn(gen_addsi3(reg, reg, off_reg));
++        RTX_FRAME_RELATED_P(insn) = 1;
++      }
++  }
++  insn = emit_jump_insn(gen_returner());
++  RTX_FRAME_RELATED_P(insn) = 1;
++}
++
++/* Implements the macro INITIAL_ELIMINATION_OFFSET, return the OFFSET.  */
++int limn2600_initial_elimination_offset(int from, int to)
++{
++  if ((from) == FRAME_POINTER_REGNUM && (to) == STACK_POINTER_REGNUM)
++  {
++    return 0x100;
++  }
++  else if ((from) == ARG_POINTER_REGNUM && (to) == FRAME_POINTER_REGNUM)
++  {
++    return 0x600;
++  }
++  else if ((from) == ARG_POINTER_REGNUM && (to) == STACK_POINTER_REGNUM)
++  {
++    return 0x1000;
++  }
++  else if ((from) == FRAME_POINTER_REGNUM && (to) == HARD_FRAME_POINTER_REGNUM)
++  {
++    /* Compute this since we need to use cfun->machine->local_vars_size.  */
++    limn2600_compute_frame();
++    return -cfun->machine->callee_saved_reg_size;
++  }
++  else if ((from) == ARG_POINTER_REGNUM && (to) == HARD_FRAME_POINTER_REGNUM)
++  {
++    return 0x00;
++  }
++  abort();
++}
++
++/* Worker function for TARGET_SETUP_INCOMING_VARARGS.  */
++static void
++limn2600_setup_incoming_varargs(cumulative_args_t cum_v,
++                                const function_arg_info &,
++                                int *pretend_size, int no_rtl)
++{
++  CUMULATIVE_ARGS *cum = get_cumulative_args(cum_v);
++  int regs = 7 - *cum;
++  *pretend_size = regs < 0 ? 0 : GET_MODE_SIZE(SImode) * regs;
++
++  if (no_rtl)
++    return;
++
++  for (int regno = *cum; regno <= 10; regno++)
++  {
++    rtx arg_reg = gen_rtx_REG(SImode, ARG_POINTER_REGNUM);
++    rtx reg = gen_rtx_REG(SImode, regno);
++    emit_insn(gen_addsi3(arg_reg,
++                         arg_reg,
++                         gen_int_mode(UNITS_PER_WORD, SImode)));
++    emit_move_insn(gen_rtx_MEM(SImode, arg_reg), reg);
++  }
++}
++
++/* Return the fixed registers used for condition codes.  */
++static bool
++limn2600_fixed_condition_code_regs(unsigned int *p1, unsigned int *p2)
++{
++  *p1 = CC_REG;
++  *p2 = INVALID_REGNUM;
++  return true;
++}
++
++/* Return the next register to be used to hold a function argument or
++   NULL_RTX if there's no more space.  */
++static rtx
++limn2600_function_arg(cumulative_args_t cum_v, const function_arg_info &arg)
++{
++  CUMULATIVE_ARGS *cum = get_cumulative_args(cum_v);
++  if (FUNCTION_ARG_REGNO_P(*cum))
++    return gen_rtx_REG(arg.mode, *cum);
++  else
++    return NULL_RTX;
++}
++
++static void
++limn2600_function_arg_advance(cumulative_args_t cum_v,
++                              const function_arg_info &arg)
++{
++#define LIMN2600_FUNCTION_ARG_SIZE(MODE, TYPE) \
++  ((MODE) != BLKmode ? GET_MODE_SIZE(MODE)     \
++                     : (unsigned)int_size_in_bytes(TYPE))
++  CUMULATIVE_ARGS *cum = get_cumulative_args(cum_v);
++  *cum += FUNCTION_ARG_REGNO_P(*cum)
++              ? LIMN2600_FUNCTION_ARG_SIZE(arg.mode, arg.type) / UNITS_PER_WORD
++              : 0;
++#undef LIMN2600_FUNCTION_ARG_SIZE
++}
++
++/* Return non-zero if the function argument described by ARG is to be
++   passed by reference.  */
++static bool
++limn2600_pass_by_reference(cumulative_args_t, const function_arg_info &arg)
++{
++  if (arg.aggregate_type_p())
++    return true;
++  unsigned HOST_WIDE_INT size = arg.type_size_in_bytes();
++  return size > UNITS_PER_WORD;
++}
++
++/* Some function arguments will only partially fit in the registers
++   that hold arguments.  Given a new arg, return the number of bytes
++   that fit in argument passing registers.  */
++static int
++limn2600_arg_partial_bytes(cumulative_args_t cum_v, const function_arg_info &arg)
++{
++  CUMULATIVE_ARGS *cum = get_cumulative_args(cum_v);
++  if (!FUNCTION_ARG_REGNO_P(*cum))
++    return 0;
++
++  int size;
++  if (limn2600_pass_by_reference(cum_v, arg))
++    size = UNITS_PER_WORD;
++  else if (arg.type)
++  {
++    if (AGGREGATE_TYPE_P(arg.type))
++      return 0;
++    size = int_size_in_bytes(arg.type);
++  }
++  else
++    size = GET_MODE_SIZE(arg.mode);
++
++  int bytes_left = (UNITS_PER_WORD * 4) - ((*cum - 7) * UNITS_PER_WORD);
++  if (size > bytes_left)
++    return bytes_left;
++  else
++    return 0;
++}
++
++/* Worker function for TARGET_STATIC_CHAIN.  */
++static rtx
++limn2600_static_chain(const_tree ARG_UNUSED(fndecl_or_type), bool incoming_p)
++{
++  rtx addr;
++  if (incoming_p)
++    addr = plus_constant(Pmode, arg_pointer_rtx, UNITS_PER_WORD);
++  else
++    addr = plus_constant(Pmode, stack_pointer_rtx, -UNITS_PER_WORD);
++
++  rtx mem = gen_rtx_MEM(Pmode, addr);
++  MEM_NOTRAP_P(mem) = 1;
++  return mem;
++}
++
++/* Helper function for `limn2600_legitimate_address_p'.  */
++static bool
++limn2600_reg_ok_for_base_p(const_rtx reg, bool strict_p)
++{
++  int regno = REGNO(reg);
++  if (strict_p)
++    return HARD_REGNO_OK_FOR_BASE_P(regno) || HARD_REGNO_OK_FOR_BASE_P(reg_renumber[regno]);
++  else
++    return !HARD_REGISTER_NUM_P(regno) || HARD_REGNO_OK_FOR_BASE_P(regno);
++}
++
++/* Worker function for TARGET_LEGITIMATE_ADDRESS_P.  */
++static bool
++limn2600_legitimate_address_p(machine_mode mode ATTRIBUTE_UNUSED,
++                              rtx x, bool strict_p,
++                              addr_space_t as)
++{
++  gcc_assert(ADDR_SPACE_GENERIC_P(as));
++  if (REG_P(x) && limn2600_reg_ok_for_base_p(x, strict_p))
++    return true;
++  if (GET_CODE(x) == SYMBOL_REF || GET_CODE(x) == LABEL_REF || GET_CODE(x) == CONST)
++    return true;
++  return false;
++}
++
++/* The Global `targetm' Variable.  */
++/* Initialize the GCC target structure.  */
++#undef TARGET_PROMOTE_PROTOTYPES
++#define TARGET_PROMOTE_PROTOTYPES hook_bool_const_tree_true
++#undef TARGET_RETURN_IN_MEMORY
++#define TARGET_RETURN_IN_MEMORY limn2600_return_in_memory
++#undef TARGET_MUST_PASS_IN_STACK
++#define TARGET_MUST_PASS_IN_STACK must_pass_in_stack_var_size
++#undef TARGET_PASS_BY_REFERENCE
++#define TARGET_PASS_BY_REFERENCE limn2600_pass_by_reference
++#undef TARGET_ARG_PARTIAL_BYTES
++#define TARGET_ARG_PARTIAL_BYTES limn2600_arg_partial_bytes
++#undef TARGET_FUNCTION_ARG
++#define TARGET_FUNCTION_ARG limn2600_function_arg
++#undef TARGET_FUNCTION_ARG_ADVANCE
++#define TARGET_FUNCTION_ARG_ADVANCE limn2600_function_arg_advance
++#undef TARGET_LRA_P
++#define TARGET_LRA_P hook_bool_void_false
++#undef TARGET_ADDR_SPACE_LEGITIMATE_ADDRESS_P
++#define TARGET_ADDR_SPACE_LEGITIMATE_ADDRESS_P limn2600_legitimate_address_p
++#undef TARGET_SETUP_INCOMING_VARARGS
++#define TARGET_SETUP_INCOMING_VARARGS limn2600_setup_incoming_varargs
++#undef TARGET_FIXED_CONDITION_CODE_REGS
++#define TARGET_FIXED_CONDITION_CODE_REGS limn2600_fixed_condition_code_regs
++/* Define this to return an RTX representing the place where a
++   function returns or receives a value of data type RET_TYPE, a tree
++   node representing a data type.  */
++#undef TARGET_FUNCTION_VALUE
++#define TARGET_FUNCTION_VALUE limn2600_function_value
++#undef TARGET_LIBCALL_VALUE
++#define TARGET_LIBCALL_VALUE limn2600_libcall_value
++#undef TARGET_FUNCTION_VALUE_REGNO_P
++#define TARGET_FUNCTION_VALUE_REGNO_P limn2600_function_value_regno_p
++#undef TARGET_FRAME_POINTER_REQUIRED
++#define TARGET_FRAME_POINTER_REQUIRED hook_bool_void_true
++#undef TARGET_STATIC_CHAIN
++#define TARGET_STATIC_CHAIN limn2600_static_chain
++#undef TARGET_OPTION_OVERRIDE
++#define TARGET_OPTION_OVERRIDE limn2600_option_override
++#undef TARGET_PRINT_OPERAND
++#define TARGET_PRINT_OPERAND limn2600_print_operand
++#undef TARGET_PRINT_OPERAND_ADDRESS
++#define TARGET_PRINT_OPERAND_ADDRESS limn2600_print_operand_address
++#undef TARGET_CONSTANT_ALIGNMENT
++#define TARGET_CONSTANT_ALIGNMENT constant_alignment_word_strings
++
++struct gcc_target targetm = TARGET_INITIALIZER;
++#include "gt-limn2600.h"
+diff --git a/gcc/config/limn2600/limn2600.h b/gcc/config/limn2600/limn2600.h
+new file mode 100644
+index 00000000000..063ac5165ce
+--- /dev/null
++++ b/gcc/config/limn2600/limn2600.h
+@@ -0,0 +1,339 @@
++/* Target Definitions for limn2600.
++   Copyright (C) 2008-2022 Free Software Foundation, Inc.
++
++   This file is part of GCC.
++
++   GCC is free software; you can redistribute it and/or modify it
++   under the terms of the GNU General Public License as published
++   by the Free Software Foundation; either version 3, or (at your
++   option) any later version.
++
++   GCC is distributed in the hope that it will be useful, but WITHOUT
++   ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++   or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public
++   License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with GCC; see the file COPYING3.  If not see
++   <http://www.gnu.org/licenses/>.  */
++
++#ifndef GCC_LIMN2600_H
++#define GCC_LIMN2600_H
++
++/* Layout of Source Language Data Types */
++#define INT_TYPE_SIZE 32
++#define SHORT_TYPE_SIZE 16
++#define LONG_TYPE_SIZE 32
++#define LONG_LONG_TYPE_SIZE 64
++
++#define FLOAT_TYPE_SIZE 32
++#define DOUBLE_TYPE_SIZE 64
++#define LONG_DOUBLE_TYPE_SIZE 64
++
++#define DEFAULT_SIGNED_CHAR 1
++
++#undef SIZE_TYPE
++#define SIZE_TYPE "unsigned int"
++
++#undef PTRDIFF_TYPE
++#define PTRDIFF_TYPE "int"
++
++#undef WCHAR_TYPE
++#define WCHAR_TYPE "unsigned int"
++
++#undef WCHAR_TYPE_SIZE
++#define WCHAR_TYPE_SIZE BITS_PER_WORD
++
++#define REGISTER_NAMES                                           \
++   {                                                             \
++      "zero",                                                    \
++          "t0", "t1", "t2", "t3", "t4", "t5",                    \
++          "a0", "a1", "a2", "a3",                                \
++          "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8",  \
++          "s9", "s10", "s11", "s12", "s13", "s14", "s15", "s16", \
++          "s17",                                                 \
++          "tp", "sp", "lr",                                      \
++          "cc", "fp"                                             \
++   }
++
++#define FIRST_PSEUDO_REGISTER 34
++
++enum reg_class
++{
++   NO_REGS,
++   GENERAL_REGS,
++   CC_REGS,
++   SPECIAL_REGS,
++   ALL_REGS,
++   LIM_REG_CLASSES
++};
++
++#define REG_CLASS_CONTENTS                       \
++   {                                             \
++      {0x00, 0x00000000},     /* Empty */        \
++          {0x00, 0xFFFFFFFF}, /* General regs */ \
++          {0x02, 0x00000000}, /* CC regs */      \
++          {0x04, 0x00000000}, /* Special regs */      \
++      {                                          \
++         0x07, 0xFFFFFFFF                        \
++      } /* All registers */                      \
++   }
++
++#define N_REG_CLASSES LIM_REG_CLASSES
++
++#define REG_CLASS_NAMES   \
++   {                      \
++      "NO_REGS",          \
++          "GENERAL_REGS", \
++          "CC_REGS",      \
++          "SPECIAL_REGS",      \
++          "ALL_REGS"      \
++   }
++
++#define FIXED_REGISTERS           \
++   {                              \
++      1, 0, 0, 0, 0, 0, 0, 0,     \
++          0, 0, 0, 0, 0, 0, 0, 0, \
++          0, 0, 0, 0, 0, 0, 0, 0, \
++          0, 0, 0, 0, 0, 1, 1, 1, \
++          1, 1,                      \
++   }
++
++#define CALL_USED_REGISTERS       \
++   {                              \
++      1, 1, 1, 1, 1, 1, 1, 1,     \
++          1, 1, 1, 0, 0, 0, 0, 0, \
++          0, 0, 0, 0, 0, 0, 0, 0, \
++          0, 0, 0, 0, 0, 1, 1, 1, \
++          1, 1,                      \
++   }
++
++/* We can't copy to or from our CC register. */
++#define AVOID_CCMODE_COPIES 1
++
++/* A C expression whose value is a register class containing hard
++   register REGNO.  */
++#define REGNO_REG_CLASS(R) (((R) <= 31) ? GENERAL_REGS : CC_REGS)
++
++/* The Overall Framework of an Assembler File */
++
++#define ASM_COMMENT_START "#"
++#define ASM_APP_ON ""
++#define ASM_APP_OFF ""
++
++#define FILE_ASM_OP "\t.file\n"
++
++/* Switch to the text or data segment.  */
++#define TEXT_SECTION_ASM_OP ".section text"
++#define DATA_SECTION_ASM_OP ".section data"
++
++/* Assembler Commands for Alignment */
++
++#define ASM_OUTPUT_ALIGN(STREAM, POWER) \
++   fprintf(STREAM, "\t.p2align\t%d\n", POWER);
++
++/* Output and Generation of Labels */
++
++#define GLOBAL_ASM_OP ".global\t"
++
++/* Passing Arguments in Registers */
++
++/* A C type for declaring a variable that is used as the first
++   argument of `FUNCTION_ARG' and other related values.  */
++#define CUMULATIVE_ARGS unsigned int
++
++/* If defined, the maximum amount of space required for outgoing arguments
++   will be computed and placed into the variable
++   `current_function_outgoing_args_size'.  No space will be pushed
++   onto the stack for each call; instead, the function prologue should
++   increase the stack frame size by this amount.  */
++#define ACCUMULATE_OUTGOING_ARGS 1
++
++/* A C statement (sans semicolon) for initializing the variable CUM
++   for the state at the beginning of the argument list.
++   For limn2600; argument is at A0 (7).  */
++#define INIT_CUMULATIVE_ARGS(CUM, FNTYPE, LIBNAME, FNDECL, N_NAMED_ARGS) \
++   (CUM = 7)
++
++/* How Scalar Function Values Are Returned */
++
++/* STACK AND CALLING */
++
++/* Define this macro if pushing a word onto the stack moves the stack
++   pointer to a smaller address.  */
++#define STACK_GROWS_DOWNWARD 1
++
++/* Define this if the above stack space is to be considered part of the
++   space allocated by the caller.  */
++#define OUTGOING_REG_PARM_STACK_SPACE(FNTYPE) 1
++#define STACK_PARMS_IN_REG_PARM_AREA
++
++/* Offset from the argument pointer register to the first argument's
++   address.  On some machines it may depend on the data type of the
++   function.  */
++#define FIRST_PARM_OFFSET(F) 12
++
++/* Define this macro to nonzero value if the addresses of local variable slots
++   are at negative offsets from the frame pointer.  */
++#define FRAME_GROWS_DOWNWARD 1
++
++/* Define this macro as a C expression that is nonzero for registers that are
++   used by the epilogue or the return pattern.  The stack and frame
++   pointer registers are already assumed to be used as needed.  */
++#define EPILOGUE_USES(R) ((R) == 1)
++
++/* A C expression whose value is RTL representing the location of the
++   incoming return address at the beginning of any function, before
++   the prologue.  */
++#define INCOMING_RETURN_ADDR_RTX \
++   gen_frame_mem(Pmode,          \
++                 plus_constant(Pmode, stack_pointer_rtx, UNITS_PER_WORD))
++
++/* Describe how we implement __builtin_eh_return.  */
++#define EH_RETURN_DATA_REGNO(N) ((N) < 4 ? (N + 2) : INVALID_REGNUM)
++
++/* Store the return handler into the call frame.  */
++#define EH_RETURN_HANDLER_RTX \
++   gen_frame_mem(Pmode,       \
++                 plus_constant(Pmode, frame_pointer_rtx, UNITS_PER_WORD))
++
++/* Storage Layout */
++#define BITS_BIG_ENDIAN 0
++#define BYTES_BIG_ENDIAN 0
++#define WORDS_BIG_ENDIAN 0
++
++/* Alignment required for a function entry point, in bits.  */
++#define FUNCTION_BOUNDARY 16
++
++/* Define this macro as a C expression which is nonzero if accessing
++   less than a word of memory (i.e. a `char' or a `short') is no
++   faster than accessing a word of memory.  */
++#define SLOW_BYTE_ACCESS 0
++
++/* Number of storage units in a word; normally the size of a
++   general-purpose register, a power of two from 1 or 8.  */
++#define UNITS_PER_WORD 4
++
++/* Define this macro to the minimum alignment enforced by hardware
++   for the stack pointer on this machine.  The definition is a C
++   expression for the desired alignment (measured in bits).  */
++#define STACK_BOUNDARY 32
++
++/* Normal alignment required for function parameters on the stack, in
++   bits.  All stack parameters receive at least this much alignment
++   regardless of data type.  */
++#define PARM_BOUNDARY 32
++
++/* No data type wants to be aligned rounder than this.  */
++#define BIGGEST_ALIGNMENT 32
++
++/* The best alignment to use in cases where we have a choice.  */
++#define FASTEST_ALIGNMENT 32
++
++/* Every structures size must be a multiple of 32-bits.  */
++#define STRUCTURE_SIZE_BOUNDARY 32
++
++/* Make arrays of chars word-aligned for the same reasons.  */
++#define DATA_ALIGNMENT(TYPE, ALIGN) \
++   (TREE_CODE(TYPE) == ARRAY_TYPE && TYPE_MODE(TREE_TYPE(TYPE)) == QImode && (ALIGN) < FASTEST_ALIGNMENT ? FASTEST_ALIGNMENT : (ALIGN))
++
++/* Set this nonzero if move instructions will actually fail to work
++   when given unaligned data.  */
++#define STRICT_ALIGNMENT 0
++
++/* Generating Code for Profiling */
++#define FUNCTION_PROFILER(FILE, LABELNO) (abort(), 0)
++
++/* Trampolines for Nested Functions.  */
++#define TRAMPOLINE_SIZE (2 + 6 + 4 + 2 + 6)
++
++/* Alignment required for trampolines, in bits.  */
++#define TRAMPOLINE_ALIGNMENT 32
++
++/* An alias for the machine mode for pointers.  */
++#define Pmode SImode
++
++/* An alias for the machine mode used for memory references to
++   functions being called, in `call' RTL expressions.  */
++#define FUNCTION_MODE QImode
++
++/* The register number of the stack pointer register, which must also
++   be a fixed register according to `FIXED_REGISTERS'.  */
++#define STACK_POINTER_REGNUM 30
++
++/* The register number of the frame pointer register, which is used to
++   access automatic variables in the stack frame.
++   In limn2600 we use a fake FP register */
++#define FRAME_POINTER_REGNUM 33
++
++/* The register number of the arg pointer register, which is used to
++   access the function's argument list.  */
++#define ARG_POINTER_REGNUM FRAME_POINTER_REGNUM
++
++#define ELIMINABLE_REGS                               \
++   {                                                  \
++   { ARG_POINTER_REGNUM,   HARD_FRAME_POINTER_REGNUM },			\
++   { ARG_POINTER_REGNUM,   STACK_POINTER_REGNUM },			\
++   { FRAME_POINTER_REGNUM, HARD_FRAME_POINTER_REGNUM },			\
++   { FRAME_POINTER_REGNUM, STACK_POINTER_REGNUM }	}
++
++/* This macro returns the initial difference between the specified pair
++   of registers.  */
++#define INITIAL_ELIMINATION_OFFSET(FROM, TO, OFFSET)                \
++   do                                                               \
++   {                                                                \
++      (OFFSET) = limn2600_initial_elimination_offset((FROM), (TO)); \
++   } while (0)
++
++/* A C expression that is nonzero if REGNO is the number of a hard
++   register in which function arguments are sometimes passed.  */
++#define FUNCTION_ARG_REGNO_P(r) (r >= 7 && r <= 10)
++
++/* A macro whose definition is the name of the class to which a valid
++   base register must belong.  A base register is one used in an
++   address which is the register value plus a displacement.  */
++#define BASE_REG_CLASS GENERAL_REGS
++
++#define INDEX_REG_CLASS NO_REGS
++
++#define HARD_REGNO_OK_FOR_BASE_P(NUM) \
++   ((unsigned)(NUM) < FIRST_PSEUDO_REGISTER && (REGNO_REG_CLASS(NUM) == GENERAL_REGS || (NUM) == HARD_FRAME_POINTER_REGNUM))
++
++/* A C expression which is nonzero if register number NUM is suitable
++   for use as a base register in operand addresses.  */
++#ifdef REG_OK_STRICT
++#define REGNO_OK_FOR_BASE_P(NUM) \
++   (HARD_REGNO_OK_FOR_BASE_P(NUM) || HARD_REGNO_OK_FOR_BASE_P(reg_renumber[(NUM)]))
++#else
++#define REGNO_OK_FOR_BASE_P(NUM) \
++   ((NUM) >= FIRST_PSEUDO_REGISTER || HARD_REGNO_OK_FOR_BASE_P(NUM))
++#endif
++
++/* A C expression which is nonzero if register number NUM is suitable
++   for use as an index register in operand addresses.  */
++#define REGNO_OK_FOR_INDEX_P(NUM) 0
++
++/* The maximum number of bytes that a single instruction can move
++   quickly between memory and registers or between two memory
++   locations.  */
++#define MOVE_MAX 4
++
++/* All load operations zero extend.  */
++#define LOAD_EXTEND_OP(MEM) ZERO_EXTEND
++
++/* A number, the maximum number of registers that can appear in a
++   valid memory address.  */
++#define MAX_REGS_PER_ADDRESS 1
++
++/* An alias for a machine mode name.  This is the machine mode that
++   elements of a jump-table should have.  */
++#define CASE_VECTOR_MODE SImode
++
++/* Run-time Target Specification */
++#define TARGET_CPU_CPP_BUILTINS()     \
++   {                                  \
++      builtin_define_std("limn2600"); \
++      builtin_define_std("LIMN2600"); \
++   }
++
++#endif /* GCC_LIMN2600_H */
+diff --git a/gcc/config/limn2600/limn2600.md b/gcc/config/limn2600/limn2600.md
+new file mode 100644
+index 00000000000..a9d7ff55179
+--- /dev/null
++++ b/gcc/config/limn2600/limn2600.md
+@@ -0,0 +1,322 @@
++;; Machine description for limn2600
++;; Copyright (C) 2009-2022 Free Software Foundation, Inc.
++
++;; This file is part of GCC.
++
++;; GCC is free software; you can redistribute it and/or modify it
++;; under the terms of the GNU General Public License as published
++;; by the Free Software Foundation; either version 3, or (at your
++;; option) any later version.
++
++;; GCC is distributed in the hope that it will be useful, but WITHOUT
++;; ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++;; or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public
++;; License for more details.
++
++;; You should have received a copy of the GNU General Public License
++;; along with GCC; see the file COPYING3.  If not see
++;; <http://www.gnu.org/licenses/>.
++
++;; -------------------------------------------------------------------------
++;; Constraints
++;; -------------------------------------------------------------------------
++
++(define_constraint "O"
++  "The constant zero"
++  (and (match_code "const_int")
++       (match_test "ival == 0")))
++
++(define_constraint "I"
++  "A 5-bit constant"
++  (and (match_code "const_int")
++       (match_test "ival >= 0 && ival <= 31")))
++
++(define_constraint "J"
++  "A 16-bit constant"
++  (and (match_code "const_int")
++       (match_test "ival >= 0 && ival <= 0xffff")))
++
++(define_constraint "W"
++  "A register inderect memory operand"
++  (and (match_code "mem")
++        (match_test "REG_P (XEXP (op, 0))
++        && REGNO_OK_FOR_BASE_P (REGNO (op))")))
++
++(define_predicate "limn2600_general_movsrc_operand"
++  (ior
++    (match_code "mem,reg,subreg,symbol_ref,label_ref,const")
++    (and (match_code "const_int")
++      (match_test "IN_RANGE (INTVAL (op), 0, 0xffff)")))
++{
++  return general_operand (op, mode);
++})
++
++(define_constants
++  [(CC_REG 32)])
++
++; This is a RISC architecture so let's just do this!
++(define_attr "length" "" (const_int 4))
++
++;; -------------------------------------------------------------------------
++;; nop instruction
++;; -------------------------------------------------------------------------
++(define_insn "nop"
++  [(const_int 0)]
++  ""
++  "nop")
++
++;; -------------------------------------------------------------------------
++;; Arithmetic instructions
++;; -------------------------------------------------------------------------
++(define_code_iterator ALUOP [plus minus mult div mod and xor ashiftrt us_ashift
++  lshiftrt rotate ior])
++(define_code_attr aluop [(plus "add") (minus "sub") (mult "mul") (div "div")
++  (mod "mod") (and "and") (xor "xor") (ashiftrt "ashr") (us_ashift "ashift")
++  (lshiftrt "lshr") (rotate "ror") (ior "ior")])
++(define_code_attr aluinst [(plus "add") (minus "sub") (mult "mul") (div "div")
++  (mod "mod") (and "and") (xor "xor") (ashiftrt "ash") (us_ashift "lsh")
++  (lshiftrt "rsh") (rotate "ror") (ior "or")])
++
++(define_code_iterator XSHOP [us_ashift lshiftrt ashiftrt rotate])
++(define_code_attr xshop [(us_ashift "lsh") (lshiftrt "rsh") (ashiftrt "ash")
++  (rotate "ror")])
++
++(define_insn "*<ALUOP:aluop><XSHOP:xshop>si3"
++  [(set (match_operand:SI 0 "register_operand" "=r")
++	  (ALUOP:SI
++	   (match_operand:SI 1 "register_operand" "r")
++	   (XSHOP:SI
++      (match_operand:SI 2 "register_operand" "r")
++      (match_operand:SI 3 "immediate_operand" "I"))))]
++  ""
++  "<ALUOP:aluinst>\\t%0, %1, %2 <XSHOP:xshop> %3")
++
++(define_insn "<aluop>si3"
++  [(set (match_operand:SI 0 "register_operand" "=r,r")
++	  (ALUOP:SI
++	   (match_operand:SI 1 "register_operand" "r,r")
++	   (match_operand:SI 2 "general_operand" "r,J")))]
++  ""
++  "@
++  <aluinst>\\t%0, %1, %2
++  <aluinst>\\t%0, %1, %2")
++
++(define_insn "norsi3"
++  [(set (match_operand:SI 0 "register_operand" "=r")
++	  (not:SI (ior:SI
++      (match_operand:SI 1 "register_operand" "r")
++	    (match_operand:SI 2 "register_operand" "r"))))]
++  ""
++  "nor\\t%0, %1, %2")
++
++;; -------------------------------------------------------------------------
++;; Move instructions
++;; -------------------------------------------------------------------------
++(define_mode_iterator MODE [HI QI SI])
++(define_mode_attr opmode [(HI "hi") (QI "qi") (SI "si")])
++(define_mode_attr memmode [(HI "int") (QI "byte") (SI "long")])
++
++(define_expand "mov<MODE:opmode>"
++  [(set (match_operand:MODE 0 "nonimmediate_operand" "")
++ 	  (match_operand:MODE 1 "general_operand" ""))]
++  ""
++  "
++{
++  if(<MODE>mode == SImode)
++  {
++    /* If this is a store, force the value into a register.  */
++    if (!(reload_in_progress || reload_completed))
++    {
++      if (MEM_P (operands[0]))
++      {
++        operands[1] = force_reg (<MODE>mode, operands[1]);
++        if (MEM_P (XEXP (operands[0], 0)))
++          operands[0] = gen_rtx_MEM (<MODE>mode, force_reg (<MODE>mode, XEXP (operands[0], 0)));
++      }
++      else 
++        if (MEM_P (operands[1]) && MEM_P (XEXP (operands[1], 0)))
++          operands[1] = gen_rtx_MEM (<MODE>mode, force_reg (<MODE>mode, XEXP (operands[1], 0)));
++    }
++  }
++  else
++  {
++    /* If this is a store, force the value into a register.  */
++    if (MEM_P (operands[0]))
++      operands[1] = force_reg (<MODE>mode, operands[1]);
++  }
++}")
++
++(define_insn "*mov<MODE:opmode>"
++  [(set (match_operand:MODE 0 "nonimmediate_operand" "=r,r,r,W")
++	(match_operand:MODE 1 "limn2600_general_movsrc_operand" "r,i,W,r"))]
++  "register_operand (operands[0], <MODE>mode)
++   || register_operand (operands[1], <MODE>mode)"
++  "@
++   lr\\t%0, %1
++   la\\t%0, %1
++   mov\\t%0, <MODE:memmode> [%1]
++   mov\\t<MODE:memmode> [%0], %1")
++
++(define_insn "*load<MODE:opmode>_offset<XSHOP:xshop>"
++  [(set (match_operand:MODE 0 "register_operand" "=r")
++	(mem:MODE
++    (plus:SI (match_operand:SI 1 "register_operand" "r")
++      (XSHOP:SI
++        (match_operand:SI 2 "register_operand" "r")
++        (match_operand:SI 3 "immediate_operand" "I")))))]
++  "register_operand (operands[0], <MODE>mode)
++   || register_operand (operands[1], <MODE>mode)"
++  "mov\\t%0, <MODE:memmode> [%1 + %2 <XSHOP:xshop> %3]")
++
++(define_insn "*store<MODE:opmode>_offset<XSHOP:xshop>"
++  [(set (mem:MODE (plus:SI (match_operand:SI 0 "register_operand" "r")
++    (XSHOP:SI
++      (match_operand:SI 1 "register_operand" "r")
++      (match_operand:SI 2 "immediate_operand" "I"))))
++    (match_operand:MODE 3 "register_operand" "r"))]
++  "register_operand (operands[0], <MODE>mode)
++   || register_operand (operands[1], <MODE>mode)"
++  "mov\\t<MODE:memmode> [%0 + %1 <XSHOP:xshop> %2], %3")
++
++(define_insn "*load<MODE:opmode>_offset"
++  [(set (match_operand:MODE 0 "register_operand" "=r")
++    (mem:MODE
++      (plus:SI (match_operand:SI 1 "register_operand" "r")
++        (match_operand:SI 2 "register_operand" "r"))))]
++  "register_operand (operands[0], <MODE>mode)
++   || register_operand (operands[1], <MODE>mode)"
++  "mov\\t%0, <MODE:memmode> [%1 + %2 lsh 0]")
++
++(define_insn "*store<MODE:opmode>_offset"
++  [(set (mem:MODE (plus:SI (match_operand:SI 0 "register_operand" "r")
++    (match_operand:SI 1 "register_operand" "r")))
++    (match_operand:MODE 2 "register_operand" "r"))]
++  "register_operand (operands[0], <MODE>mode)
++   || register_operand (operands[1], <MODE>mode)"
++  "mov\\t<MODE:memmode> [%0 + %1 lsh 0], %2")
++
++;; -------------------------------------------------------------------------
++;; Compare instructions
++;; -------------------------------------------------------------------------
++(define_expand "cbranchsi4"
++  [(set (reg:CC CC_REG)
++        (compare:CC
++         (match_operand:SI 1 "general_operand" "")
++         (match_operand:SI 2 "general_operand" "")))
++   (set (pc)
++        (if_then_else (match_operator 0 "comparison_operator"
++                       [(reg:CC CC_REG) (const_int 0)])
++                      (label_ref (match_operand 3 "" ""))
++                      (pc)))]
++  ""
++  "
++{
++  /* Force the compare operands into registers.  */
++  if (GET_CODE (operands[1]) != REG)
++	  operands[1] = force_reg (SImode, operands[1]);
++  if (GET_CODE (operands[2]) != REG)
++	  operands[2] = force_reg (SImode, operands[2]);
++}")
++
++;; -------------------------------------------------------------------------
++;; Branch instructions
++;; -------------------------------------------------------------------------
++(define_code_iterator COND [ne eq lt ltu gt gtu ge le geu leu])
++(define_code_attr CC [(ne "ne") (eq "eq") (lt "lt") (ltu "ltu") 
++		      (gt "gt") (gtu "gtu") (ge "ge") (le "le") 
++		      (geu "geu") (leu "leu") ])
++(define_code_attr rCC [(ne "eq") (eq "ne") (lt "ge") (ltu "geu") 
++		       (gt "le") (gtu "leu") (ge "lt") (le "gt") 
++		       (geu "ltu") (leu "gtu") ])
++
++(define_insn "*b<COND:code>"
++  [(set (reg:CC CC_REG)
++    (compare:CC
++      (match_operand:SI 1 "register_operand" "r")
++      (const_int 0)))
++  (set (pc)
++	  (if_then_else (COND (reg:CC CC_REG)
++			    (const_int 0))
++		      (label_ref (match_operand 0 "" ""))
++		      (pc)))]
++  ""
++  "b<CC>\\t%l0")
++
++;; -------------------------------------------------------------------------
++;; Call and Jump instructions
++;; -------------------------------------------------------------------------
++(define_expand "call"
++  [(call (match_operand:QI 0 "memory_operand" "")
++		(match_operand 1 "general_operand" ""))]
++  ""
++{
++  gcc_assert (MEM_P (operands[0]));
++})
++
++(define_insn "*call"
++  [(call (mem:QI (match_operand:SI 0 "nonmemory_operand" "i,r"))
++	 (match_operand 1 "" ""))]
++  ""
++  "@
++  jal\\t%0
++  jalr\\tlr, %1, 0")
++
++(define_expand "call_value"
++  [(set (match_operand 0 "" "")
++		(call (match_operand:QI 1 "memory_operand" "")
++		 (match_operand 2 "" "")))]
++  ""
++{
++  gcc_assert (MEM_P (operands[1]));
++})
++
++(define_insn "*call_value"
++  [(set (match_operand 0 "register_operand" "=r")
++	(call (mem:QI (match_operand:SI 1 "immediate_operand" "i"))
++	      (match_operand 2 "" "")))]
++  ""
++  "jalr\\t%0, zero, %1")
++
++(define_insn "*call_value_indirect"
++  [(set (match_operand 0 "register_operand" "=r")
++	(call (mem:QI (match_operand:SI 1 "immediate_operand" "r"))
++	      (match_operand 2 "" "")))]
++  ""
++  "jalr\\t%0, %1, 0")
++
++(define_insn "indirect_jump"
++  [(set (pc) (match_operand:SI 0 "nonimmediate_operand" "r"))]
++  ""
++  "j\\t%0")
++
++(define_insn "jump"
++  [(set (pc)
++	(label_ref (match_operand 0 "" "")))]
++  ""
++  "j\\t%l0")
++
++;; -------------------------------------------------------------------------
++;; Prologue & Epilogue
++;; -------------------------------------------------------------------------
++(define_expand "prologue"
++  [(clobber (const_int 0))]
++  ""
++  "
++{
++  limn2600_expand_prologue ();
++  DONE;
++}")
++
++(define_expand "epilogue"
++  [(return)]
++  ""
++  "
++{
++  limn2600_expand_epilogue ();
++  DONE;
++}")
++
++(define_insn "returner"
++  [(return)]
++  "reload_completed"
++  "ret")
+diff --git a/gcc/config/limn2600/limn2600.opt b/gcc/config/limn2600/limn2600.opt
+new file mode 100644
+index 00000000000..55375c7b4b7
+--- /dev/null
++++ b/gcc/config/limn2600/limn2600.opt
+@@ -0,0 +1,21 @@
++; Options for the limn2600 compiler port.
++
++; Copyright (C) 2012-2022 Free Software Foundation, Inc.
++;
++; This file is part of GCC.
++;
++; GCC is free software; you can redistribute it and/or modify it under
++; the terms of the GNU General Public License as published by the Free
++; Software Foundation; either version 3, or (at your option) any later
++; version.
++;
++; GCC is distributed in the hope that it will be useful, but WITHOUT ANY
++; WARRANTY; without even the implied warranty of MERCHANTABILITY or
++; FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++; for more details.
++;
++; You should have received a copy of the GNU General Public License
++; along with GCC; see the file COPYING3.  If not see
++; <http://www.gnu.org/licenses/>.
++
++; Nothing!
