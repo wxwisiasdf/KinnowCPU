@@ -1,9 +1,9 @@
 diff --git a/.vscode/settings.json b/.vscode/settings.json
 new file mode 100644
-index 00000000000..8ae04f229bd
+index 00000000000..870146629a6
 --- /dev/null
 +++ b/.vscode/settings.json
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,24 @@
 +{
 +    "files.associations": {
 +        "*.md": "lisp",
@@ -21,7 +21,11 @@ index 00000000000..8ae04f229bd
 +        "*.ipp": "cpp",
 +        "hash_map": "cpp",
 +        "hash_set": "cpp",
-+        "utility": "cpp"
++        "utility": "cpp",
++        "chrono": "cpp",
++        "*.def": "cpp",
++        "ratio": "cpp",
++        "pr77550.C": "cpp"
 +    }
 +}
 \ No newline at end of file
@@ -69,10 +73,10 @@ index b5eda046033..83aef126879 100644
  	tm_file="elfos.h ${tm_file} mips/elf.h ${nbsd_tm_file} mips/netbsd.h"
 diff --git a/gcc/config/limn2600/limn2600-protos.h b/gcc/config/limn2600/limn2600-protos.h
 new file mode 100644
-index 00000000000..ab5fa7a8d9d
+index 00000000000..2afa6310e44
 --- /dev/null
 +++ b/gcc/config/limn2600/limn2600-protos.h
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,31 @@
 +/* Prototypes for limn2600.cc functions used in the md file & elsewhere.
 +   Copyright (C) 2009-2022 Free Software Foundation, Inc.
 +
@@ -95,12 +99,21 @@ index 00000000000..ab5fa7a8d9d
 +extern void  limn2600_expand_prologue (void);
 +extern void  limn2600_expand_epilogue (void);
 +extern int   limn2600_initial_elimination_offset (int, int);
++extern void  limn2600_expand_move (machine_mode, rtx, rtx);
++extern bool  limn2600_bitshift_op_ok_for_any_p(const_rtx x, bool strict_p);
++extern bool  limn2600_composite_offset_address_p (rtx, bool);
++extern bool  limn2600_hard_regno_ok_for_base_p (int);
++extern bool  limn2600_reg_ok_for_base_p(const_rtx x, bool strict_p);
++extern rtx   limn2600_eh_return_handler_rtx (void);
++extern int   limn2600_eh_return_data_regno (int);
++extern rtx   limn2600_incoming_return_addr_rtx (void);
++extern enum reg_class limn2600_regno_reg_class (int);
 diff --git a/gcc/config/limn2600/limn2600.cc b/gcc/config/limn2600/limn2600.cc
 new file mode 100644
-index 00000000000..8fd663165f3
+index 00000000000..2ea5617ab6f
 --- /dev/null
 +++ b/gcc/config/limn2600/limn2600.cc
-@@ -0,0 +1,503 @@
+@@ -0,0 +1,704 @@
 +/* Target Code for limn2600
 +   Copyright (C) 2008-2022 Free Software Foundation, Inc.
 +
@@ -154,6 +167,7 @@ index 00000000000..8fd663165f3
 +  } while (0)
 +
 +/* Worker function for TARGET_RETURN_IN_MEMORY.  */
++
 +static bool
 +limn2600_return_in_memory(const_tree type, const_tree fntype ATTRIBUTE_UNUSED)
 +{
@@ -165,30 +179,36 @@ index 00000000000..8fd663165f3
 +   VALTYPE is the data type of the value (as a tree).
 +   If the precise function being called is known, FUNC is its
 +   FUNCTION_DECL; otherwise, FUNC is 0.
-+   We always return values in A0  */
++
++   We always return values in register a0 for limn2600.  */
++
 +static rtx
 +limn2600_function_value(const_tree valtype,
 +                        const_tree fntype_or_decl ATTRIBUTE_UNUSED,
 +                        bool outgoing ATTRIBUTE_UNUSED)
 +{
-+  return gen_rtx_REG(TYPE_MODE(valtype), 7);
++  return gen_rtx_REG(TYPE_MODE(valtype), LIMN2600_A0);
 +}
 +
 +/* Define how to find the value returned by a library function.
-+   We always return values in A0 */
++
++   We always return values in register a0 for limn2600.  */
++
 +static rtx
 +limn2600_libcall_value(machine_mode mode,
 +                       const_rtx fun ATTRIBUTE_UNUSED)
 +{
-+  return gen_rtx_REG(mode, 7);
++  return gen_rtx_REG(mode, LIMN2600_A0);
 +}
 +
 +/* Handle TARGET_FUNCTION_VALUE_REGNO_P.
-+   We always return values in A0  */
++
++   We always return values in register a0 for limn2600.  */
++
 +static bool
 +limn2600_function_value_regno_p(const unsigned int regno)
 +{
-+  return regno == 7;
++  return regno == LIMN2600_A0;
 +}
 +
 +/* Emit an error message when we're in an asm, and a fatal error for
@@ -208,15 +228,63 @@ index 00000000000..8fd663165f3
 +static void
 +limn2600_print_operand_address(FILE *file, machine_mode, rtx x)
 +{
++  const char *size_specifier;
++  switch (GET_MODE(x))
++  {
++  case QImode:
++    size_specifier = "byte";
++    break;
++  case HImode:
++    size_specifier = "int";
++    break;
++  case SImode:
++    size_specifier = "long";
++    break;
++  default:
++    gcc_unreachable();
++  }
++
++  fprintf(file, "%s [", size_specifier);
 +  switch (GET_CODE(x))
 +  {
 +  case REG:
-+    fprintf(file, "(%s)", reg_names[REGNO(x)]);
++    fprintf(file, "%s", reg_names[REGNO(x)]);
 +    break;
++
++  case PLUS:
++    switch (GET_CODE(XEXP(x, 1)))
++    {
++    case CONST_INT:
++      fprintf(file, "%s + %ld", reg_names[REGNO(XEXP(x, 0))],
++              INTVAL(XEXP(x, 1)));
++      break;
++    case SYMBOL_REF:
++      output_addr_const(file, XEXP(x, 1));
++      fprintf(file, "+ %s", reg_names[REGNO(XEXP(x, 0))]);
++      break;
++    case CONST:
++    {
++      rtx plus = XEXP(XEXP(x, 1), 0);
++      if (GET_CODE(XEXP(plus, 0)) == SYMBOL_REF && CONST_INT_P(XEXP(plus, 1)))
++      {
++        output_addr_const(file, XEXP(plus, 0));
++        fprintf(file, "%s + %ld", reg_names[REGNO(XEXP(x, 0))],
++                INTVAL(XEXP(plus, 1)));
++      }
++      else
++        gcc_unreachable();
++    }
++    break;
++    default:
++      gcc_unreachable();
++    }
++    break;
++
 +  default:
 +    output_addr_const(file, x);
 +    break;
 +  }
++  fprintf(file, "]");
 +}
 +
 +/* The PRINT_OPERAND worker.  */
@@ -245,7 +313,7 @@ index 00000000000..8fd663165f3
 +  switch (GET_CODE(operand))
 +  {
 +  case REG:
-+    if (REGNO(operand) > FIRST_PSEUDO_REGISTER)
++    if (REGNO(operand) > LIMN2600_LR)
 +      internal_error("internal error: bad register: %d", REGNO(operand));
 +    fprintf(file, "%s", reg_names[REGNO(operand)]);
 +    return;
@@ -267,19 +335,31 @@ index 00000000000..8fd663165f3
 +  }
 +}
 +
++enum reg_class limn2600_regno_reg_class(int regno)
++{
++  if (regno == LIMN2600_CC)
++    return CC_REGS;
++  if (regno == LIMN2600_PC)
++    return SPECIAL_REGS;
++  return regno < FIRST_PSEUDO_REGISTER ? GENERAL_REGS : SPECIAL_REGS;
++}
++
 +/* Per-function machine data.  */
 +struct GTY(()) machine_function
 +{
 +  /* Number of bytes saved on the stack for callee saved registers.  */
 +  int callee_saved_reg_size;
++
 +  /* Number of bytes saved on the stack for local variables.  */
 +  int local_vars_size;
++
 +  /* The sum of 2 sizes: locals vars and padding byte for saving the
 +   * registers.  Used in expand_prologue () and expand_epilogue().  */
 +  int size_for_adjusting_sp;
 +};
 +
 +/* Zero initialization is OK for all current fields.  */
++
 +static struct machine_function *
 +limn2600_init_machine_status(void)
 +{
@@ -296,6 +376,7 @@ index 00000000000..8fd663165f3
 +
 +/* Compute the size of the local area and the size to be adjusted by the
 + * prologue and epilogue.  */
++
 +static void
 +limn2600_compute_frame(void)
 +{
@@ -315,7 +396,7 @@ index 00000000000..8fd663165f3
 +  /* Save callee-saved registers.  */
 +  for (int regno = 0; regno < FIRST_PSEUDO_REGISTER; regno++)
 +    if (df_regs_ever_live_p(regno) && (!call_used_or_fixed_reg_p(regno)))
-+      cfun->machine->callee_saved_reg_size += UNITS_PER_WORD;
++      cfun->machine->callee_saved_reg_size += 4;
 +
 +  cfun->machine->size_for_adjusting_sp =
 +      crtl->args.pretend_args_size + cfun->machine->local_vars_size + (ACCUMULATE_OUTGOING_ARGS ? (HOST_WIDE_INT)crtl->outgoing_args_size : 0);
@@ -324,124 +405,121 @@ index 00000000000..8fd663165f3
 +void limn2600_expand_prologue(void)
 +{
 +  rtx insn;
-+
 +  limn2600_compute_frame();
 +
 +  if (flag_stack_usage_info)
 +    current_function_static_stack_size = cfun->machine->size_for_adjusting_sp;
 +
-+  if (cfun->machine->callee_saved_reg_size)
++  /* Save callee-saved registers.  */
++  for (int regno = 0; regno < FIRST_PSEUDO_REGISTER; regno++)
 +  {
-+    /* Save callee-saved registers.  */
-+    rtx reg = gen_rtx_REG(SImode, 1);
-+    insn = emit_move_insn(reg, hard_frame_pointer_rtx);
-+    RTX_FRAME_RELATED_P(insn) = 1;
-+    rtx off_reg = gen_rtx_REG(SImode, 2);
-+    insn = emit_move_insn(off_reg, gen_int_mode(UNITS_PER_WORD, SImode));
-+    RTX_FRAME_RELATED_P(insn) = 1;
-+
-+    for (int regno = 0; regno < FIRST_PSEUDO_REGISTER; regno++)
-+      if (df_regs_ever_live_p(regno) && !call_used_or_fixed_reg_p(regno))
-+      {
-+        insn = emit_move_insn(gen_rtx_MEM(SImode, reg), gen_rtx_REG(SImode, regno));
-+        RTX_FRAME_RELATED_P(insn) = 1;
-+        insn = emit_insn(gen_subsi3(reg, reg, off_reg));
-+        RTX_FRAME_RELATED_P(insn) = 1;
-+      }
++    if (df_regs_ever_live_p(regno) && !call_used_or_fixed_reg_p(regno))
++    {
++      insn = emit_insn(gen_movsi_push(gen_rtx_REG(Pmode, regno)));
++      RTX_FRAME_RELATED_P(insn) = 1;
++    }
 +  }
 +
 +  if (cfun->machine->size_for_adjusting_sp > 0)
 +  {
 +    int i = cfun->machine->size_for_adjusting_sp;
-+    insn = emit_insn(gen_subsi3(stack_pointer_rtx,
-+                                stack_pointer_rtx,
-+                                gen_int_mode(i, SImode)));
-+    RTX_FRAME_RELATED_P(insn) = 1;
++    while ((i >= 255) && (i <= 510))
++    {
++      insn = emit_insn(gen_subsi3(stack_pointer_rtx,
++                                  stack_pointer_rtx,
++                                  gen_int_mode(255, SImode)));
++      RTX_FRAME_RELATED_P(insn) = 1;
++      i -= 255;
++    }
++    if (i <= 255)
++    {
++      insn = emit_insn(gen_subsi3(stack_pointer_rtx,
++                                  stack_pointer_rtx,
++                                  gen_int_mode(i, SImode)));
++      RTX_FRAME_RELATED_P(insn) = 1;
++    }
++    else
++    {
++      rtx reg = gen_rtx_REG(SImode, LIMN2600_T0);
++      insn = emit_move_insn(reg, gen_int_mode(i, SImode));
++      RTX_FRAME_RELATED_P(insn) = 1;
++      insn = emit_insn(gen_subsi3(stack_pointer_rtx,
++                                  stack_pointer_rtx,
++                                  reg));
++      RTX_FRAME_RELATED_P(insn) = 1;
++    }
 +  }
 +}
 +
 +void limn2600_expand_epilogue(void)
 +{
-+  rtx insn;
 +  if (cfun->machine->callee_saved_reg_size != 0)
 +  {
-+    /* Frame[-Save Area] */
-+    rtx reg = gen_rtx_REG(Pmode, 1);
-+    insn = emit_move_insn(reg, hard_frame_pointer_rtx);
-+    RTX_FRAME_RELATED_P(insn) = 1;
-+    insn = emit_insn(gen_subsi3(reg, reg, gen_int_mode(cfun->machine->callee_saved_reg_size, SImode)));
-+    RTX_FRAME_RELATED_P(insn) = 1;
-+
-+    rtx off_reg = gen_rtx_REG(SImode, 2);
-+    insn = emit_move_insn(off_reg, gen_int_mode(UNITS_PER_WORD, SImode));
-+    RTX_FRAME_RELATED_P(insn) = 1;
-+    /* Restore saved registers */
++    rtx reg = gen_rtx_REG(Pmode, LIMN2600_T0);
++    if (cfun->machine->callee_saved_reg_size <= 255)
++    {
++      emit_move_insn(reg, hard_frame_pointer_rtx);
++      emit_insn(gen_subsi3(reg, reg,
++                           gen_int_mode(cfun->machine->callee_saved_reg_size, SImode)));
++    }
++    else
++    {
++      emit_move_insn(reg,
++                     GEN_INT(-cfun->machine->callee_saved_reg_size));
++      emit_insn(gen_addsi3(reg, reg, hard_frame_pointer_rtx));
++    }
 +    for (int regno = FIRST_PSEUDO_REGISTER; regno-- > 0;)
 +      if (!call_used_or_fixed_reg_p(regno) && df_regs_ever_live_p(regno))
 +      {
-+        insn = emit_move_insn(gen_rtx_REG(SImode, regno), gen_rtx_MEM(SImode, reg));
-+        RTX_FRAME_RELATED_P(insn) = 1;
-+        insn = emit_insn(gen_addsi3(reg, reg, off_reg));
-+        RTX_FRAME_RELATED_P(insn) = 1;
++        rtx preg = gen_rtx_REG(Pmode, regno);
++        emit_insn(gen_movsi_pop(reg, preg));
 +      }
 +  }
-+  insn = emit_jump_insn(gen_returner());
-+  RTX_FRAME_RELATED_P(insn) = 1;
++  emit_jump_insn(gen_returner());
 +}
 +
 +/* Implements the macro INITIAL_ELIMINATION_OFFSET, return the OFFSET.  */
++
 +int limn2600_initial_elimination_offset(int from, int to)
 +{
-+  if ((from) == FRAME_POINTER_REGNUM && (to) == STACK_POINTER_REGNUM)
-+  {
-+    return 0x100;
-+  }
-+  else if ((from) == ARG_POINTER_REGNUM && (to) == FRAME_POINTER_REGNUM)
-+  {
-+    return 0x600;
-+  }
-+  else if ((from) == ARG_POINTER_REGNUM && (to) == STACK_POINTER_REGNUM)
-+  {
-+    return 0x1000;
-+  }
-+  else if ((from) == FRAME_POINTER_REGNUM && (to) == HARD_FRAME_POINTER_REGNUM)
++  int ret;
++  if ((from) == FRAME_POINTER_REGNUM && (to) == HARD_FRAME_POINTER_REGNUM)
 +  {
 +    /* Compute this since we need to use cfun->machine->local_vars_size.  */
 +    limn2600_compute_frame();
-+    return -cfun->machine->callee_saved_reg_size;
++    ret = -cfun->machine->callee_saved_reg_size;
 +  }
 +  else if ((from) == ARG_POINTER_REGNUM && (to) == HARD_FRAME_POINTER_REGNUM)
-+  {
-+    return 0x00;
-+  }
-+  abort();
++    ret = 0;
++  else
++    abort();
++
++  return ret;
 +}
 +
 +/* Worker function for TARGET_SETUP_INCOMING_VARARGS.  */
++
 +static void
 +limn2600_setup_incoming_varargs(cumulative_args_t cum_v,
 +                                const function_arg_info &,
 +                                int *pretend_size, int no_rtl)
 +{
 +  CUMULATIVE_ARGS *cum = get_cumulative_args(cum_v);
-+  int regs = 7 - *cum;
++  int regs = LIMN2600_A3 - *cum;
 +  *pretend_size = regs < 0 ? 0 : GET_MODE_SIZE(SImode) * regs;
-+
-+  if (no_rtl)
-+    return;
-+
-+  for (int regno = *cum; regno <= 10; regno++)
-+  {
-+    rtx arg_reg = gen_rtx_REG(SImode, ARG_POINTER_REGNUM);
-+    rtx reg = gen_rtx_REG(SImode, regno);
-+    emit_insn(gen_addsi3(arg_reg,
-+                         arg_reg,
-+                         gen_int_mode(UNITS_PER_WORD, SImode)));
-+    emit_move_insn(gen_rtx_MEM(SImode, arg_reg), reg);
-+  }
++  if (!no_rtl)
++    for (int regno = *cum; regno <= LIMN2600_A3; regno++)
++    {
++      rtx reg = gen_rtx_REG(SImode, regno);
++      rtx slot = gen_rtx_PLUS(Pmode,
++                              gen_rtx_REG(SImode, ARG_POINTER_REGNUM),
++                              GEN_INT(UNITS_PER_WORD * (3 + (regno - LIMN2600_A0))));
++      emit_move_insn(gen_rtx_MEM(SImode, slot), reg);
++    }
 +}
 +
 +/* Return the fixed registers used for condition codes.  */
++
 +static bool
 +limn2600_fixed_condition_code_regs(unsigned int *p1, unsigned int *p2)
 +{
@@ -452,54 +530,59 @@ index 00000000000..8fd663165f3
 +
 +/* Return the next register to be used to hold a function argument or
 +   NULL_RTX if there's no more space.  */
++
 +static rtx
 +limn2600_function_arg(cumulative_args_t cum_v, const function_arg_info &arg)
 +{
 +  CUMULATIVE_ARGS *cum = get_cumulative_args(cum_v);
-+  if (FUNCTION_ARG_REGNO_P(*cum))
++
++  if (*cum <= LIMN2600_A3)
 +    return gen_rtx_REG(arg.mode, *cum);
 +  else
 +    return NULL_RTX;
 +}
 +
++#define LIMN2600_FUNCTION_ARG_SIZE(MODE, TYPE) \
++  ((MODE) != BLKmode ? GET_MODE_SIZE(MODE)     \
++                     : (unsigned)int_size_in_bytes(TYPE))
++
 +static void
 +limn2600_function_arg_advance(cumulative_args_t cum_v,
 +                              const function_arg_info &arg)
 +{
-+#define LIMN2600_FUNCTION_ARG_SIZE(MODE, TYPE) \
-+  ((MODE) != BLKmode ? GET_MODE_SIZE(MODE)     \
-+                     : (unsigned)int_size_in_bytes(TYPE))
 +  CUMULATIVE_ARGS *cum = get_cumulative_args(cum_v);
-+  *cum += FUNCTION_ARG_REGNO_P(*cum)
-+              ? LIMN2600_FUNCTION_ARG_SIZE(arg.mode, arg.type) / UNITS_PER_WORD
-+              : 0;
-+#undef LIMN2600_FUNCTION_ARG_SIZE
++  *cum = (*cum <= LIMN2600_A3
++              ? *cum + ((3 + LIMN2600_FUNCTION_ARG_SIZE(arg.mode, arg.type)) / 4)
++              : *cum);
 +}
 +
 +/* Return non-zero if the function argument described by ARG is to be
 +   passed by reference.  */
++
 +static bool
 +limn2600_pass_by_reference(cumulative_args_t, const function_arg_info &arg)
 +{
 +  if (arg.aggregate_type_p())
 +    return true;
 +  unsigned HOST_WIDE_INT size = arg.type_size_in_bytes();
-+  return size > UNITS_PER_WORD;
++  return size > 4 * LIMN2600_NUM_ARGS;
 +}
 +
 +/* Some function arguments will only partially fit in the registers
 +   that hold arguments.  Given a new arg, return the number of bytes
 +   that fit in argument passing registers.  */
++
 +static int
 +limn2600_arg_partial_bytes(cumulative_args_t cum_v, const function_arg_info &arg)
 +{
 +  CUMULATIVE_ARGS *cum = get_cumulative_args(cum_v);
-+  if (!FUNCTION_ARG_REGNO_P(*cum))
++  int size;
++
++  if (*cum > LIMN2600_A3)
 +    return 0;
 +
-+  int size;
 +  if (limn2600_pass_by_reference(cum_v, arg))
-+    size = UNITS_PER_WORD;
++    size = 4;
 +  else if (arg.type)
 +  {
 +    if (AGGREGATE_TYPE_P(arg.type))
@@ -509,7 +592,8 @@ index 00000000000..8fd663165f3
 +  else
 +    size = GET_MODE_SIZE(arg.mode);
 +
-+  int bytes_left = (UNITS_PER_WORD * 4) - ((*cum - 7) * UNITS_PER_WORD);
++  int used_regs = *cum - LIMN2600_A0;
++  int bytes_left = (4 * LIMN2600_NUM_ARGS) - (used_regs * 4);
 +  if (size > bytes_left)
 +    return bytes_left;
 +  else
@@ -517,12 +601,14 @@ index 00000000000..8fd663165f3
 +}
 +
 +/* Worker function for TARGET_STATIC_CHAIN.  */
++
 +static rtx
 +limn2600_static_chain(const_tree ARG_UNUSED(fndecl_or_type), bool incoming_p)
 +{
 +  rtx addr;
++
 +  if (incoming_p)
-+    addr = plus_constant(Pmode, arg_pointer_rtx, UNITS_PER_WORD);
++    addr = plus_constant(Pmode, arg_pointer_rtx, 2 * UNITS_PER_WORD);
 +  else
 +    addr = plus_constant(Pmode, stack_pointer_rtx, -UNITS_PER_WORD);
 +
@@ -531,15 +617,110 @@ index 00000000000..8fd663165f3
 +  return mem;
 +}
 +
-+/* Helper function for `limn2600_legitimate_address_p'.  */
-+static bool
-+limn2600_reg_ok_for_base_p(const_rtx reg, bool strict_p)
++/* Worker function for TARGET_ASM_TRAMPOLINE_TEMPLATE.  */
++
++static void
++limn2600_asm_trampoline_template(FILE *f)
 +{
-+  int regno = REGNO(reg);
++  fprintf(f, "\tpush  $sp, $r0\n");
++  fprintf(f, "\tldi.l $r0, 0x0\n");
++  fprintf(f, "\tsto.l 0x8($fp), $r0\n");
++  fprintf(f, "\tpop   $sp, $r0\n");
++  fprintf(f, "\tjmpa  0x0\n");
++}
++
++/* Worker function for TARGET_TRAMPOLINE_INIT.  */
++
++static void
++limn2600_trampoline_init(rtx m_tramp, tree fndecl, rtx chain_value)
++{
++  rtx fnaddr = XEXP(DECL_RTL(fndecl), 0);
++  emit_block_move(m_tramp, assemble_trampoline_template(),
++                  gen_int_mode(TRAMPOLINE_SIZE, SImode), BLOCK_OP_NORMAL);
++  rtx mem = adjust_address(m_tramp, SImode, 4);
++  emit_move_insn(mem, chain_value);
++  mem = adjust_address(m_tramp, SImode, 16);
++  emit_move_insn(mem, fnaddr);
++}
++
++bool limn2600_hard_regno_ok_for_base_p(int num)
++{
++  return (unsigned)num < FIRST_PSEUDO_REGISTER && (REGNO_REG_CLASS(num) == GENERAL_REGS || num == HARD_FRAME_POINTER_REGNUM);
++}
++
++/* Helper function for `limn2600_legitimate_address_p'
++ * Returns if the register is fine to use as a base register. */
++bool limn2600_reg_ok_for_base_p(const_rtx x, bool strict_p)
++{
++  if (!REG_P(x))
++    return false;
++  
++  int regno = REGNO(x);
 +  if (strict_p)
 +    return HARD_REGNO_OK_FOR_BASE_P(regno) || HARD_REGNO_OK_FOR_BASE_P(reg_renumber[regno]);
 +  else
 +    return !HARD_REGISTER_NUM_P(regno) || HARD_REGNO_OK_FOR_BASE_P(regno);
++}
++
++/* True for bitshift operations that correspond to any of the 4 defined
++ * operations in the limn2600 architecture */
++bool limn2600_bitshift_op_ok_for_any_p(const_rtx x, bool strict_p)
++{
++  /* (reg XHS imm5) */
++  switch (GET_CODE(x))
++  {
++  case ROTATERT: /* Fallthrough */
++  case ASHIFTRT:
++  case LSHIFTRT:
++  case ASHIFT:
++    if (limn2600_reg_ok_for_base_p(XEXP(x, 0), strict_p))
++    {
++      x = XEXP(x, 1);
++      if (CONST_INT_P(x))
++        return IN_RANGE(INTVAL(x), 0, 31);
++    }
++    break;
++  default:
++    break;
++  }
++  return false;
++}
++
++/* Return true for valid memory operands for mov */
++bool limn2600_composite_offset_address_p(rtx x, bool strict_p)
++{
++  /* [imm16?] - the linker will deal with this later on */
++  if (GET_CODE(x) == SYMBOL_REF || GET_CODE(x) == LABEL_REF || GET_CODE(x) == CONST)
++    return true;
++
++  /* [imm16] */
++  if (CONST_INT_P(x))
++  {
++    return IN_RANGE(INTVAL(x), 0, 0xFFFF);
++  }
++  /* [reg + imm16] */
++  else if (GET_CODE(x) == PLUS && limn2600_reg_ok_for_base_p(XEXP(x, 0), strict_p))
++  {
++    x = XEXP(x, 1);
++    /* [reg + imm16] */
++    if (CONST_INT_P(x))
++    {
++      return IN_RANGE(INTVAL(x), 0, 0xFFFF);
++    }
++    /* [reg + reg] */
++    else if (limn2600_reg_ok_for_base_p(x, strict_p))
++    {
++      return true;
++    }
++    /* [reg + (reg XHS imm5]) */
++    else if (limn2600_bitshift_op_ok_for_any_p(x, strict_p))
++    {
++      /* [reg + (reg XHS imm5]) */
++      return true;
++    }
++  }
++  /* [reg XHS imm5] OR [reg]*/
++  return limn2600_reg_ok_for_base_p(x, strict_p) || limn2600_bitshift_op_ok_for_any_p(x, strict_p);
 +}
 +
 +/* Worker function for TARGET_LEGITIMATE_ADDRESS_P.  */
@@ -549,17 +730,38 @@ index 00000000000..8fd663165f3
 +                              addr_space_t as)
 +{
 +  gcc_assert(ADDR_SPACE_GENERIC_P(as));
-+  if (REG_P(x) && limn2600_reg_ok_for_base_p(x, strict_p))
-+    return true;
-+  if (GET_CODE(x) == SYMBOL_REF || GET_CODE(x) == LABEL_REF || GET_CODE(x) == CONST)
-+    return true;
-+  return false;
++  return limn2600_composite_offset_address_p(x, strict_p);
++}
++
++/* Store the return handler into the call frame.  */
++rtx limn2600_eh_return_handler_rtx(void)
++{
++  return gen_frame_mem(Pmode,
++                       plus_constant(Pmode, frame_pointer_rtx, UNITS_PER_WORD));
++}
++
++/* Describe how we implement __builtin_eh_return.  */
++int limn2600_eh_return_data_regno(int num)
++{
++  return num < LIMN2600_NUM_ARGS ? num + LIMN2600_A0 : INVALID_REGNUM;
++}
++
++/* A C expression whose value is RTL representing the location of the
++   incoming return address at the beginning of any function, before
++   the prologue.  */
++rtx limn2600_incoming_return_addr_rtx(void)
++{
++  return gen_frame_mem(Pmode,
++                       plus_constant(Pmode, stack_pointer_rtx, UNITS_PER_WORD));
 +}
 +
 +/* The Global `targetm' Variable.  */
++
 +/* Initialize the GCC target structure.  */
++
 +#undef TARGET_PROMOTE_PROTOTYPES
 +#define TARGET_PROMOTE_PROTOTYPES hook_bool_const_tree_true
++
 +#undef TARGET_RETURN_IN_MEMORY
 +#define TARGET_RETURN_IN_MEMORY limn2600_return_in_memory
 +#undef TARGET_MUST_PASS_IN_STACK
@@ -572,14 +774,16 @@ index 00000000000..8fd663165f3
 +#define TARGET_FUNCTION_ARG limn2600_function_arg
 +#undef TARGET_FUNCTION_ARG_ADVANCE
 +#define TARGET_FUNCTION_ARG_ADVANCE limn2600_function_arg_advance
-+#undef TARGET_LRA_P
-+#define TARGET_LRA_P hook_bool_void_false
++
 +#undef TARGET_ADDR_SPACE_LEGITIMATE_ADDRESS_P
 +#define TARGET_ADDR_SPACE_LEGITIMATE_ADDRESS_P limn2600_legitimate_address_p
++
 +#undef TARGET_SETUP_INCOMING_VARARGS
 +#define TARGET_SETUP_INCOMING_VARARGS limn2600_setup_incoming_varargs
++
 +#undef TARGET_FIXED_CONDITION_CODE_REGS
 +#define TARGET_FIXED_CONDITION_CODE_REGS limn2600_fixed_condition_code_regs
++
 +/* Define this to return an RTX representing the place where a
 +   function returns or receives a value of data type RET_TYPE, a tree
 +   node representing a data type.  */
@@ -589,27 +793,37 @@ index 00000000000..8fd663165f3
 +#define TARGET_LIBCALL_VALUE limn2600_libcall_value
 +#undef TARGET_FUNCTION_VALUE_REGNO_P
 +#define TARGET_FUNCTION_VALUE_REGNO_P limn2600_function_value_regno_p
++
 +#undef TARGET_FRAME_POINTER_REQUIRED
 +#define TARGET_FRAME_POINTER_REQUIRED hook_bool_void_true
++
 +#undef TARGET_STATIC_CHAIN
 +#define TARGET_STATIC_CHAIN limn2600_static_chain
++#undef TARGET_ASM_TRAMPOLINE_TEMPLATE
++#define TARGET_ASM_TRAMPOLINE_TEMPLATE limn2600_asm_trampoline_template
++#undef TARGET_TRAMPOLINE_INIT
++#define TARGET_TRAMPOLINE_INIT limn2600_trampoline_init
++
 +#undef TARGET_OPTION_OVERRIDE
 +#define TARGET_OPTION_OVERRIDE limn2600_option_override
++
 +#undef TARGET_PRINT_OPERAND
 +#define TARGET_PRINT_OPERAND limn2600_print_operand
 +#undef TARGET_PRINT_OPERAND_ADDRESS
 +#define TARGET_PRINT_OPERAND_ADDRESS limn2600_print_operand_address
++
 +#undef TARGET_CONSTANT_ALIGNMENT
 +#define TARGET_CONSTANT_ALIGNMENT constant_alignment_word_strings
 +
 +struct gcc_target targetm = TARGET_INITIALIZER;
++
 +#include "gt-limn2600.h"
 diff --git a/gcc/config/limn2600/limn2600.h b/gcc/config/limn2600/limn2600.h
 new file mode 100644
-index 00000000000..063ac5165ce
+index 00000000000..7b482286217
 --- /dev/null
 +++ b/gcc/config/limn2600/limn2600.h
-@@ -0,0 +1,339 @@
+@@ -0,0 +1,427 @@
 +/* Target Definitions for limn2600.
 +   Copyright (C) 2008-2022 Free Software Foundation, Inc.
 +
@@ -632,29 +846,95 @@ index 00000000000..063ac5165ce
 +#ifndef GCC_LIMN2600_H
 +#define GCC_LIMN2600_H
 +
++#undef  STARTFILE_SPEC
++#define STARTFILE_SPEC "%{!mno-crt0:crt0%O%s} crti.o%s crtbegin.o%s"
++
++/* Provide an ENDFILE_SPEC appropriate for svr4.  Here we tack on our own
++   magical crtend.o file (see crtstuff.c) which provides part of the
++   support for getting C++ file-scope static object constructed before
++   entering `main', followed by the normal svr3/svr4 "finalizer" file,
++   which is either `gcrtn.o' or `crtn.o'.  */
++#undef  ENDFILE_SPEC
++#define ENDFILE_SPEC "crtend.o%s crtn.o%s"
++
 +/* Layout of Source Language Data Types */
++
 +#define INT_TYPE_SIZE 32
 +#define SHORT_TYPE_SIZE 16
 +#define LONG_TYPE_SIZE 32
-+#define LONG_LONG_TYPE_SIZE 64
++#define LONG_LONG_TYPE_SIZE 32
 +
 +#define FLOAT_TYPE_SIZE 32
-+#define DOUBLE_TYPE_SIZE 64
-+#define LONG_DOUBLE_TYPE_SIZE 64
++#define DOUBLE_TYPE_SIZE 32
++#define LONG_DOUBLE_TYPE_SIZE 32
 +
-+#define DEFAULT_SIGNED_CHAR 1
++#define DEFAULT_SIGNED_CHAR 0
 +
-+#undef SIZE_TYPE
++#undef  SIZE_TYPE
 +#define SIZE_TYPE "unsigned int"
 +
-+#undef PTRDIFF_TYPE
++#undef  PTRDIFF_TYPE
 +#define PTRDIFF_TYPE "int"
 +
-+#undef WCHAR_TYPE
++#undef  WCHAR_TYPE
 +#define WCHAR_TYPE "unsigned int"
 +
-+#undef WCHAR_TYPE_SIZE
++#undef  WCHAR_TYPE_SIZE
 +#define WCHAR_TYPE_SIZE BITS_PER_WORD
++
++/*
++   Limn2600 defines the following:
++
++   zero - Hardwired zero register.
++   t0 to t5 - Scratch registers (beautiful).
++   a0 to a3 - Argument registers.
++   s0 to s17 - Call saved registers (horrible).
++   tp - Thread pointer
++   sp - Stack pointer
++   lr - Link register, often the return address
++
++   All registers, with the exception of lr and zero; do not have any effect
++   on the CPU itself. One could use a0 to a3 as caller saved without any
++   repercusions.
++ */
++#define LIMN2600_T0     1
++#define LIMN2600_T1     2 
++#define LIMN2600_T2     3
++#define LIMN2600_T3     4
++#define LIMN2600_T4     5
++#define LIMN2600_T5     6
++#define LIMN2600_A0     7
++#define LIMN2600_A1     8
++#define LIMN2600_A2     9
++#define LIMN2600_A3     10
++#define LIMN2600_S0     11
++#define LIMN2600_S1     12
++#define LIMN2600_S2     13
++#define LIMN2600_S3     14
++#define LIMN2600_S4     15
++#define LIMN2600_S5     16
++#define LIMN2600_S6     17
++#define LIMN2600_S7     18
++#define LIMN2600_S8     19
++#define LIMN2600_S9     20
++#define LIMN2600_S10    21
++#define LIMN2600_S11    22
++#define LIMN2600_S12    23
++#define LIMN2600_S13    24
++#define LIMN2600_S14    25
++#define LIMN2600_S15    26
++#define LIMN2600_S16    27
++#define LIMN2600_S17    28
++#define LIMN2600_TP     29
++#define LIMN2600_FP     LIMN2600_TP
++#define LIMN2600_SP     30
++#define LIMN2600_LR     31
++#define LIMN2600_QFP    32
++#define LIMN2600_QAP    33
++#define LIMN2600_CC     34
++#define LIMN2600_PC     35
++
++#define LIMN2600_NUM_ARGS 4
 +
 +#define REGISTER_NAMES                                           \
 +   {                                                             \
@@ -665,29 +945,29 @@ index 00000000000..063ac5165ce
 +          "s9", "s10", "s11", "s12", "s13", "s14", "s15", "s16", \
 +          "s17",                                                 \
 +          "tp", "sp", "lr",                                      \
-+          "cc", "fp"                                             \
++          "?fp", "?ap", "?pc", "?cc"                             \
 +   }
 +
-+#define FIRST_PSEUDO_REGISTER 34
++#define FIRST_PSEUDO_REGISTER 36
 +
 +enum reg_class
 +{
 +   NO_REGS,
 +   GENERAL_REGS,
-+   CC_REGS,
 +   SPECIAL_REGS,
++   CC_REGS,
 +   ALL_REGS,
 +   LIM_REG_CLASSES
 +};
 +
 +#define REG_CLASS_CONTENTS                       \
 +   {                                             \
-+      {0x00, 0x00000000},     /* Empty */        \
-+          {0x00, 0xFFFFFFFF}, /* General regs */ \
-+          {0x02, 0x00000000}, /* CC regs */      \
-+          {0x04, 0x00000000}, /* Special regs */      \
++      {0x00000000, 0x00},     /* Empty */        \
++          {0xFFFFFFFE, 0x03}, /* General regs */ \
++          {0x00000000, 0x04}, /* Special regs */ \
++          {0x00000000, 0x08}, /* CC regs */      \
 +      {                                          \
-+         0x07, 0xFFFFFFFF                        \
++         0xFFFFFFFF, 0x0F                        \
 +      } /* All registers */                      \
 +   }
 +
@@ -697,27 +977,27 @@ index 00000000000..063ac5165ce
 +   {                      \
 +      "NO_REGS",          \
 +          "GENERAL_REGS", \
++          "SPECIAL_REGS", \
 +          "CC_REGS",      \
-+          "SPECIAL_REGS",      \
 +          "ALL_REGS"      \
 +   }
 +
 +#define FIXED_REGISTERS           \
 +   {                              \
 +      1, 0, 0, 0, 0, 0, 0, 0,     \
-+          0, 0, 0, 0, 0, 0, 0, 0, \
-+          0, 0, 0, 0, 0, 0, 0, 0, \
-+          0, 0, 0, 0, 0, 1, 1, 1, \
-+          1, 1,                      \
++      0, 0, 0, 0, 0, 0, 0, 0, \
++      0, 0, 0, 0, 0, 0, 0, 0, \
++      0, 0, 0, 0, 0, 1, 1, 1, \
++      1, 1, 1, 1,             \
 +   }
 +
 +#define CALL_USED_REGISTERS       \
 +   {                              \
 +      1, 1, 1, 1, 1, 1, 1, 1,     \
-+          1, 1, 1, 0, 0, 0, 0, 0, \
-+          0, 0, 0, 0, 0, 0, 0, 0, \
-+          0, 0, 0, 0, 0, 1, 1, 1, \
-+          1, 1,                      \
++      1, 1, 1, 0, 0, 0, 0, 0, \
++      0, 0, 0, 0, 0, 0, 0, 0, \
++      0, 0, 0, 0, 0, 1, 1, 1, \
++      1, 1, 1, 1,             \
 +   }
 +
 +/* We can't copy to or from our CC register. */
@@ -725,28 +1005,48 @@ index 00000000000..063ac5165ce
 +
 +/* A C expression whose value is a register class containing hard
 +   register REGNO.  */
-+#define REGNO_REG_CLASS(R) (((R) <= 31) ? GENERAL_REGS : CC_REGS)
++#define REGNO_REG_CLASS(R) limn2600_regno_reg_class(R)
 +
 +/* The Overall Framework of an Assembler File */
 +
-+#define ASM_COMMENT_START "#"
-+#define ASM_APP_ON ""
-+#define ASM_APP_OFF ""
++#define ASM_COMMENT_START ";"
++#define ASM_APP_ON ";APP\n"
++#define ASM_APP_OFF ";NO_APP\n"
 +
-+#define FILE_ASM_OP "\t.file\n"
++#define ASM_BYTE "\t.db\t"
++#define ASM_SHORT "\t.di\t"
++#define ASM_LONG "\t.dl\t"
++
++#define TARGET_ASM_FILE_START_FILE_DIRECTIVE true
++
++/* The prefix to add for compiler private assembler symbols.  */
++#undef LOCAL_LABEL_PREFIX
++#define LOCAL_LABEL_PREFIX "."
++
++/* Prefix for internally generated assembler labels.  */
++#define LPREFIX ".L"
++
++#define FILE_ASM_OP     ";.file\n"
 +
 +/* Switch to the text or data segment.  */
-+#define TEXT_SECTION_ASM_OP ".section text"
-+#define DATA_SECTION_ASM_OP ".section data"
++#define TEXT_SECTION_ASM_OP  "\t.section text"
++#define DATA_SECTION_ASM_OP  "\t.section data"
 +
-+/* Assembler Commands for Alignment */
++/* Output at beginning of assembler file.  */
++#define TARGET_ASM_FILE_START_FILE_DIRECTIVE true
 +
-+#define ASM_OUTPUT_ALIGN(STREAM, POWER) \
-+   fprintf(STREAM, "\t.p2align\t%d\n", POWER);
++/* This is how to output an assembler line
++   that says to advance the location counter
++   to a multiple of 2**LOG bytes.  */
++
++#define ASM_OUTPUT_ALIGN(FILE,LOG)	\
++    if ((LOG) != 0) fprintf ((FILE), "\t.align %d\n", 1 << (LOG))
++
++#define ASM_NO_SKIP_IN_TEXT 1
 +
 +/* Output and Generation of Labels */
 +
-+#define GLOBAL_ASM_OP ".global\t"
++#define GLOBAL_ASM_OP "\t.global\t"
 +
 +/* Passing Arguments in Registers */
 +
@@ -762,10 +1062,10 @@ index 00000000000..063ac5165ce
 +#define ACCUMULATE_OUTGOING_ARGS 1
 +
 +/* A C statement (sans semicolon) for initializing the variable CUM
-+   for the state at the beginning of the argument list.
-+   For limn2600; argument is at A0 (7).  */
-+#define INIT_CUMULATIVE_ARGS(CUM, FNTYPE, LIBNAME, FNDECL, N_NAMED_ARGS) \
-+   (CUM = 7)
++   for the state at the beginning of the argument list.  
++   For limn2600, the first arg is passed in a0.  */
++#define INIT_CUMULATIVE_ARGS(CUM,FNTYPE,LIBNAME,FNDECL,N_NAMED_ARGS) \
++  (CUM = LIMN2600_A0)
 +
 +/* How Scalar Function Values Are Returned */
 +
@@ -780,6 +1080,10 @@ index 00000000000..063ac5165ce
 +#define OUTGOING_REG_PARM_STACK_SPACE(FNTYPE) 1
 +#define STACK_PARMS_IN_REG_PARM_AREA
 +
++/* Define this if it is the responsibility of the caller to allocate
++   the area reserved for arguments passed in registers.  */
++#define REG_PARM_STACK_SPACE(FNDECL) (LIMN2600_NUM_ARGS * UNITS_PER_WORD)
++
 +/* Offset from the argument pointer register to the first argument's
 +   address.  On some machines it may depend on the data type of the
 +   function.  */
@@ -792,22 +1096,11 @@ index 00000000000..063ac5165ce
 +/* Define this macro as a C expression that is nonzero for registers that are
 +   used by the epilogue or the return pattern.  The stack and frame
 +   pointer registers are already assumed to be used as needed.  */
-+#define EPILOGUE_USES(R) ((R) == 1)
++#define EPILOGUE_USES(R) ((R) == LIMN2600_T0)
 +
-+/* A C expression whose value is RTL representing the location of the
-+   incoming return address at the beginning of any function, before
-+   the prologue.  */
-+#define INCOMING_RETURN_ADDR_RTX \
-+   gen_frame_mem(Pmode,          \
-+                 plus_constant(Pmode, stack_pointer_rtx, UNITS_PER_WORD))
-+
-+/* Describe how we implement __builtin_eh_return.  */
-+#define EH_RETURN_DATA_REGNO(N) ((N) < 4 ? (N + 2) : INVALID_REGNUM)
-+
-+/* Store the return handler into the call frame.  */
-+#define EH_RETURN_HANDLER_RTX \
-+   gen_frame_mem(Pmode,       \
-+                 plus_constant(Pmode, frame_pointer_rtx, UNITS_PER_WORD))
++#define INCOMING_RETURN_ADDR_RTX limn2600_incoming_return_addr_rtx()
++#define EH_RETURN_DATA_REGNO(N) limn2600_eh_return_data_regno(N)
++#define EH_RETURN_HANDLER_RTX limn2600_eh_return_handler_rtx()
 +
 +/* Storage Layout */
 +#define BITS_BIG_ENDIAN 0
@@ -820,7 +1113,7 @@ index 00000000000..063ac5165ce
 +/* Define this macro as a C expression which is nonzero if accessing
 +   less than a word of memory (i.e. a `char' or a `short') is no
 +   faster than accessing a word of memory.  */
-+#define SLOW_BYTE_ACCESS 0
++#define SLOW_BYTE_ACCESS 1
 +
 +/* Number of storage units in a word; normally the size of a
 +   general-purpose register, a power of two from 1 or 8.  */
@@ -836,25 +1129,34 @@ index 00000000000..063ac5165ce
 +   regardless of data type.  */
 +#define PARM_BOUNDARY 32
 +
++/* Alignment of field after `int : 0' in a structure.  */
++#define EMPTY_FIELD_BOUNDARY  32
++
 +/* No data type wants to be aligned rounder than this.  */
 +#define BIGGEST_ALIGNMENT 32
 +
 +/* The best alignment to use in cases where we have a choice.  */
 +#define FASTEST_ALIGNMENT 32
 +
-+/* Every structures size must be a multiple of 32-bits.  */
++/* Every structures size must be a multiple of 32 bits.  */
 +#define STRUCTURE_SIZE_BOUNDARY 32
 +
-+/* Make arrays of chars word-aligned for the same reasons.  */
-+#define DATA_ALIGNMENT(TYPE, ALIGN) \
-+   (TREE_CODE(TYPE) == ARRAY_TYPE && TYPE_MODE(TREE_TYPE(TYPE)) == QImode && (ALIGN) < FASTEST_ALIGNMENT ? FASTEST_ALIGNMENT : (ALIGN))
++/* Largest integer machine mode for structures.  If undefined, the default
++   is GET_MODE_SIZE(DImode).  */
++#define MAX_FIXED_MODE_SIZE 32
 +
++/* Make arrays of chars word-aligned for the same reasons.  */
++#define DATA_ALIGNMENT(TYPE, ALIGN)		\
++  (TREE_CODE (TYPE) == ARRAY_TYPE		\
++   && TYPE_MODE (TREE_TYPE (TYPE)) == QImode	\
++   && (ALIGN) < FASTEST_ALIGNMENT ? FASTEST_ALIGNMENT : (ALIGN))
++     
 +/* Set this nonzero if move instructions will actually fail to work
 +   when given unaligned data.  */
-+#define STRICT_ALIGNMENT 0
++#define STRICT_ALIGNMENT 1
 +
 +/* Generating Code for Profiling */
-+#define FUNCTION_PROFILER(FILE, LABELNO) (abort(), 0)
++#define FUNCTION_PROFILER(FILE,LABELNO) (abort (), 0)
 +
 +/* Trampolines for Nested Functions.  */
 +#define TRAMPOLINE_SIZE (2 + 6 + 4 + 2 + 6)
@@ -863,7 +1165,7 @@ index 00000000000..063ac5165ce
 +#define TRAMPOLINE_ALIGNMENT 32
 +
 +/* An alias for the machine mode for pointers.  */
-+#define Pmode SImode
++#define Pmode         SImode
 +
 +/* An alias for the machine mode used for memory references to
 +   functions being called, in `call' RTL expressions.  */
@@ -871,35 +1173,32 @@ index 00000000000..063ac5165ce
 +
 +/* The register number of the stack pointer register, which must also
 +   be a fixed register according to `FIXED_REGISTERS'.  */
-+#define STACK_POINTER_REGNUM 30
++#define STACK_POINTER_REGNUM LIMN2600_SP
 +
 +/* The register number of the frame pointer register, which is used to
-+   access automatic variables in the stack frame.
-+   In limn2600 we use a fake FP register */
-+#define FRAME_POINTER_REGNUM 33
++   access automatic variables in the stack frame.  */
++#define FRAME_POINTER_REGNUM LIMN2600_QFP
 +
 +/* The register number of the arg pointer register, which is used to
 +   access the function's argument list.  */
-+#define ARG_POINTER_REGNUM FRAME_POINTER_REGNUM
++#define ARG_POINTER_REGNUM LIMN2600_QAP
 +
-+#define ELIMINABLE_REGS                               \
-+   {                                                  \
-+   { ARG_POINTER_REGNUM,   HARD_FRAME_POINTER_REGNUM },			\
-+   { ARG_POINTER_REGNUM,   STACK_POINTER_REGNUM },			\
-+   { FRAME_POINTER_REGNUM, HARD_FRAME_POINTER_REGNUM },			\
-+   { FRAME_POINTER_REGNUM, STACK_POINTER_REGNUM }	}
++#define HARD_FRAME_POINTER_REGNUM LIMN2600_FP
++
++#define ELIMINABLE_REGS							\
++{{ FRAME_POINTER_REGNUM, HARD_FRAME_POINTER_REGNUM },			\
++ { ARG_POINTER_REGNUM,   HARD_FRAME_POINTER_REGNUM }}			
 +
 +/* This macro returns the initial difference between the specified pair
 +   of registers.  */
-+#define INITIAL_ELIMINATION_OFFSET(FROM, TO, OFFSET)                \
-+   do                                                               \
-+   {                                                                \
-+      (OFFSET) = limn2600_initial_elimination_offset((FROM), (TO)); \
-+   } while (0)
++#define INITIAL_ELIMINATION_OFFSET(FROM, TO, OFFSET)			\
++  do {									\
++    (OFFSET) = limn2600_initial_elimination_offset ((FROM), (TO));		\
++  } while (0)
 +
 +/* A C expression that is nonzero if REGNO is the number of a hard
 +   register in which function arguments are sometimes passed.  */
-+#define FUNCTION_ARG_REGNO_P(r) (r >= 7 && r <= 10)
++#define FUNCTION_ARG_REGNO_P(r) (r >= LIMN2600_A0 && r <= LIMN2600_A3)
 +
 +/* A macro whose definition is the name of the class to which a valid
 +   base register must belong.  A base register is one used in an
@@ -908,22 +1207,22 @@ index 00000000000..063ac5165ce
 +
 +#define INDEX_REG_CLASS NO_REGS
 +
-+#define HARD_REGNO_OK_FOR_BASE_P(NUM) \
-+   ((unsigned)(NUM) < FIRST_PSEUDO_REGISTER && (REGNO_REG_CLASS(NUM) == GENERAL_REGS || (NUM) == HARD_FRAME_POINTER_REGNUM))
++#define HARD_REGNO_OK_FOR_BASE_P(NUM) limn2600_hard_regno_ok_for_base_p(NUM)
 +
 +/* A C expression which is nonzero if register number NUM is suitable
 +   for use as a base register in operand addresses.  */
 +#ifdef REG_OK_STRICT
-+#define REGNO_OK_FOR_BASE_P(NUM) \
-+   (HARD_REGNO_OK_FOR_BASE_P(NUM) || HARD_REGNO_OK_FOR_BASE_P(reg_renumber[(NUM)]))
++#define REGNO_OK_FOR_BASE_P(NUM)		 \
++  (HARD_REGNO_OK_FOR_BASE_P(NUM) 		 \
++   || HARD_REGNO_OK_FOR_BASE_P(reg_renumber[(NUM)]))
 +#else
-+#define REGNO_OK_FOR_BASE_P(NUM) \
-+   ((NUM) >= FIRST_PSEUDO_REGISTER || HARD_REGNO_OK_FOR_BASE_P(NUM))
++#define REGNO_OK_FOR_BASE_P(NUM)		 \
++  ((NUM) >= FIRST_PSEUDO_REGISTER || HARD_REGNO_OK_FOR_BASE_P(NUM))
 +#endif
 +
 +/* A C expression which is nonzero if register number NUM is suitable
 +   for use as an index register in operand addresses.  */
-+#define REGNO_OK_FOR_INDEX_P(NUM) 0
++#define REGNO_OK_FOR_INDEX_P(NUM) ((NUM) <= LIMN2600_LR)
 +
 +/* The maximum number of bytes that a single instruction can move
 +   quickly between memory and registers or between two memory
@@ -942,19 +1241,22 @@ index 00000000000..063ac5165ce
 +#define CASE_VECTOR_MODE SImode
 +
 +/* Run-time Target Specification */
-+#define TARGET_CPU_CPP_BUILTINS()     \
-+   {                                  \
-+      builtin_define_std("limn2600"); \
-+      builtin_define_std("LIMN2600"); \
-+   }
++
++#define TARGET_CPU_CPP_BUILTINS() \
++  { \
++    builtin_define_std ("limn2600");			\
++    builtin_define_std ("LIMN2600");			\
++  }
++
++#define HAS_LONG_UNCOND_BRANCH true
 +
 +#endif /* GCC_LIMN2600_H */
 diff --git a/gcc/config/limn2600/limn2600.md b/gcc/config/limn2600/limn2600.md
 new file mode 100644
-index 00000000000..a9d7ff55179
+index 00000000000..3722e5bf8c5
 --- /dev/null
 +++ b/gcc/config/limn2600/limn2600.md
-@@ -0,0 +1,322 @@
+@@ -0,0 +1,416 @@
 +;; Machine description for limn2600
 +;; Copyright (C) 2009-2022 Free Software Foundation, Inc.
 +
@@ -975,8 +1277,12 @@ index 00000000000..a9d7ff55179
 +;; <http://www.gnu.org/licenses/>.
 +
 +;; -------------------------------------------------------------------------
-+;; Constraints
++;; limn2600 specific constraints, predicates and attributes
 +;; -------------------------------------------------------------------------
++(define_constraint "B"
++  "A composite offset address."
++  (and (match_code "mem")
++    (match_test "limn2600_composite_offset_address_p (XEXP(op, 0), lra_in_progress)")))
 +
 +(define_constraint "O"
 +  "The constant zero"
@@ -984,35 +1290,93 @@ index 00000000000..a9d7ff55179
 +       (match_test "ival == 0")))
 +
 +(define_constraint "I"
-+  "A 5-bit constant"
++  "An 16-bit constant"
 +  (and (match_code "const_int")
-+       (match_test "ival >= 0 && ival <= 31")))
++       (match_test "ival >= 0 && ival <= 0xFFFF")))
 +
 +(define_constraint "J"
-+  "A 16-bit constant"
++  "An 32-bit constant"
 +  (and (match_code "const_int")
-+       (match_test "ival >= 0 && ival <= 0xffff")))
++       (match_test "ival >= 0 && ival <= 0xFFFFFFFF")))
 +
-+(define_constraint "W"
-+  "A register inderect memory operand"
-+  (and (match_code "mem")
-+        (match_test "REG_P (XEXP (op, 0))
-+        && REGNO_OK_FOR_BASE_P (REGNO (op))")))
++(define_constraint "N"
++  "A negative 16-bit constant"
++  (and (match_code "const_int")
++       (match_test "ival >= -0xFFFF && ival <= 0")))
++
++(define_predicate "limn2600_general_movdst_operand"
++  (match_code "mem,reg,subreg")
++{
++  if (MEM_P (op))
++  {
++    if (GET_CODE(XEXP(op, 0)) == SYMBOL_REF || GET_CODE(XEXP(op, 0)) == LABEL_REF || GET_CODE(XEXP(op, 0)) == CONST)
++      return 1;
++    else if (limn2600_composite_offset_address_p (XEXP(op, 0), lra_in_progress))
++      return 1;
++  }
++  return nonimmediate_operand (op, mode);
++})
 +
 +(define_predicate "limn2600_general_movsrc_operand"
-+  (ior
-+    (match_code "mem,reg,subreg,symbol_ref,label_ref,const")
-+    (and (match_code "const_int")
-+      (match_test "IN_RANGE (INTVAL (op), 0, 0xffff)")))
++  (match_code "mem,const_int,reg,subreg,symbol_ref,label_ref,const")
 +{
++  if (MEM_P (op))
++  {
++    if (GET_CODE(XEXP(op, 0)) == SYMBOL_REF || GET_CODE(XEXP(op, 0)) == LABEL_REF || GET_CODE(XEXP(op, 0)) == CONST)
++      return 1;
++    else if (limn2600_composite_offset_address_p (XEXP(op, 0), lra_in_progress))
++      return 1;
++  }
 +  return general_operand (op, mode);
 +})
 +
-+(define_constants
-+  [(CC_REG 32)])
++;; Nonzero if OP can be an operand to an add/inc/dec instruction.
++(define_predicate "limn2600_arithmethic_operand"
++  (match_code "reg,subreg,symbol_ref,label_ref,const,const_int,rotatert,ashiftrt,lshiftrt,ashift")
++{
++  /* op rd, rs, imm16 */
++  if (CONST_INT_P (op))
++    return IN_RANGE(INTVAL(op), 0, 0xFFFF);
++  /* op rd, rs, rb */
++  if (limn2600_reg_ok_for_base_p(op, lra_in_progress))
++    return 1;
++  /* op rd, rs, rb XSH imm5 */
++  return limn2600_bitshift_op_ok_for_any_p (op, lra_in_progress);
++})
 +
-+; This is a RISC architecture so let's just do this!
++; All instructions are 4-bytes (a word)
 +(define_attr "length" "" (const_int 4))
++
++;; -------------------------------------------------------------------------
++;; KinnowCPU specific optimization
++;; -------------------------------------------------------------------------
++(define_cpu_unit "a0_pipeline")
++
++;; Memory scheduler -> stores take 1 cycle, loads can take up to 32-cycles!
++(define_cpu_unit "l0_pipeline") ;; Load input (a store and a load can happen at once)
++(define_cpu_unit "l1_pipeline") ;; Load finish
++(define_cpu_unit "s0_pipeline") ;; Store input
++(define_cpu_unit "s1_pipeline") ;; Store finish (instantly)
++(define_cpu_unit "m1_pipeline") ;; Pipeline for memory scheduler ringbuffer
++
++(define_cpu_unit "b0_pipeline")
++
++(define_cpu_unit "port0")
++(define_cpu_unit "port1")
++(define_cpu_unit "port2")
++
++(define_attr "type" "load,store,arith,good_branch,evil_branch" (const_string "arith"))
++(define_reservation "finish" "port0 | port1")
++(define_insn_reservation "arith" 1 (eq_attr "type" "arith")
++                          "(a0_pipeline), finish")
++(define_insn_reservation "load" 32 (eq_attr "type" "load")
++                          "(l0_pipeline, m1_pipeline*15, l1_pipeline), port2")
++(define_insn_reservation "store" 32 (eq_attr "type" "store")
++                          "(s0_pipeline, m1_pipeline*15, s1_pipeline), port2")
++(define_insn_reservation "good_branch" 1 (eq_attr "type" "good_branch")
++                          "(b0_pipeline), finish")
++(define_insn_reservation "evil_branch" 4 (eq_attr "type" "evil_branch")
++                          "(b0_pipeline | nothing*3), finish")
 +
 +;; -------------------------------------------------------------------------
 +;; nop instruction
@@ -1025,64 +1389,79 @@ index 00000000000..a9d7ff55179
 +;; -------------------------------------------------------------------------
 +;; Arithmetic instructions
 +;; -------------------------------------------------------------------------
-+(define_code_iterator ALUOP [plus minus mult div mod and xor ashiftrt us_ashift
-+  lshiftrt rotate ior])
-+(define_code_attr aluop [(plus "add") (minus "sub") (mult "mul") (div "div")
-+  (mod "mod") (and "and") (xor "xor") (ashiftrt "ashr") (us_ashift "ashift")
-+  (lshiftrt "lshr") (rotate "ror") (ior "ior")])
-+(define_code_attr aluinst [(plus "add") (minus "sub") (mult "mul") (div "div")
-+  (mod "mod") (and "and") (xor "xor") (ashiftrt "ash") (us_ashift "lsh")
-+  (lshiftrt "rsh") (rotate "ror") (ior "or")])
++(define_code_iterator ALUOP [plus minus mult udiv div umod and xor ashiftrt us_ashift
++  lshiftrt rotatert ior])
++;; Two-operation ALU operation (no-bitwise operations)
++(define_code_iterator ALUOP_TWOOP [plus minus mult udiv div umod and xor ior])
++(define_code_attr aluop [(plus "add") (minus "sub") (mult "mul")
++  (div "div") (udiv "udiv")
++  (mod "mod\\tsigned") (umod "mod")
++  (and "and") (xor "xor") (ashiftrt "ashr")
++  (us_ashift "ashift") (lshiftrt "lshr") (rotatert "ror") (ior "ior")])
++(define_code_attr aluinst [(plus "add") (minus "sub") (mult "mul")
++  (div "div\\tsigned") (udiv "div")
++  (mod "mod\\tsigned") (umod "mod")
++  (and "and") (xor "xor") (ashiftrt "ash")
++  (us_ashift "lsh") (lshiftrt "rsh") (rotatert "ror") (ior "or")])
 +
-+(define_code_iterator XSHOP [us_ashift lshiftrt ashiftrt rotate])
-+(define_code_attr xshop [(us_ashift "lsh") (lshiftrt "rsh") (ashiftrt "ash")
-+  (rotate "ror")])
++;; addi rd, rs, imm16
++;; add  rd, ra, rb xSH imm5
 +
-+(define_insn "*<ALUOP:aluop><XSHOP:xshop>si3"
++;; Single-ALU operation (LSH is set with immediate 0 implicitly)
++(define_insn "<ALUOP:aluop>si3"
 +  [(set (match_operand:SI 0 "register_operand" "=r")
-+	  (ALUOP:SI
-+	   (match_operand:SI 1 "register_operand" "r")
-+	   (XSHOP:SI
-+      (match_operand:SI 2 "register_operand" "r")
++	  (ALUOP:SI (match_operand:SI 1 "register_operand" "0r")
++	   (match_operand:SI 2 "limn2600_arithmethic_operand" "rI")))]
++  ""
++  "<ALUOP:aluinst>\\t%0, %1, %2")
++
++;; Bitwise operations can be performed on the same instruction with the given
++;; immediate inbetween
++(define_code_iterator XSHOP [us_ashift lshiftrt ashiftrt rotatert])
++(define_code_attr xshop [(us_ashift "lsh") (lshiftrt "rsh") (ashiftrt "ash")
++  (rotatert "ror")])
++(define_insn "*<ALUOP_TWOOP:aluop>_<XSHOP:xshop>si3"
++  [(set (match_operand:SI 0 "register_operand" "=r")
++	  (ALUOP_TWOOP:SI (match_operand:SI 1 "register_operand" "r")
++	   (XSHOP:SI (match_operand:SI 2 "register_operand" "r")
 +      (match_operand:SI 3 "immediate_operand" "I"))))]
 +  ""
-+  "<ALUOP:aluinst>\\t%0, %1, %2 <XSHOP:xshop> %3")
-+
-+(define_insn "<aluop>si3"
-+  [(set (match_operand:SI 0 "register_operand" "=r,r")
-+	  (ALUOP:SI
-+	   (match_operand:SI 1 "register_operand" "r,r")
-+	   (match_operand:SI 2 "general_operand" "r,J")))]
-+  ""
-+  "@
-+  <aluinst>\\t%0, %1, %2
-+  <aluinst>\\t%0, %1, %2")
-+
-+(define_insn "norsi3"
-+  [(set (match_operand:SI 0 "register_operand" "=r")
-+	  (not:SI (ior:SI
-+      (match_operand:SI 1 "register_operand" "r")
-+	    (match_operand:SI 2 "register_operand" "r"))))]
-+  ""
-+  "nor\\t%0, %1, %2")
++  "<ALUOP_TWOOP:aluinst>\\t%0, %1, %2 <XSHOP:xshop> %3")
 +
 +;; -------------------------------------------------------------------------
 +;; Move instructions
 +;; -------------------------------------------------------------------------
++
++;; SImode
++
++;; Push a register onto the stack
++(define_insn "movsi_push"
++  [(set (mem:SI (pre_dec:SI (reg:SI 30)))
++  	(match_operand:SI 0 "register_operand" "r"))]
++  ""
++  "push\\t$sp, %0")
++
++;; Pop a register from the stack
++(define_insn "movsi_pop"
++  [(set (match_operand:SI 1 "register_operand" "=r")
++  	(mem:SI (post_inc:SI (match_operand:SI 0 "register_operand" "r"))))]
++  ""
++  "pop\\t%0, %1")
++
 +(define_mode_iterator MODE [HI QI SI])
 +(define_mode_attr opmode [(HI "hi") (QI "qi") (SI "si")])
 +(define_mode_attr memmode [(HI "int") (QI "byte") (SI "long")])
 +
-+(define_expand "mov<MODE:opmode>"
-+  [(set (match_operand:MODE 0 "nonimmediate_operand" "")
-+ 	  (match_operand:MODE 1 "general_operand" ""))]
++(define_expand "mov<opmode>"
++   [(set (match_operand:MODE 0 "nonimmediate_operand" "")
++ 	(match_operand:MODE 1 "general_operand" ""))]
 +  ""
 +  "
 +{
-+  if(<MODE>mode == SImode)
++  if (<MODE>mode == SImode)
 +  {
 +    /* If this is a store, force the value into a register.  */
-+    if (!(reload_in_progress || reload_completed))
++    if (!lra_in_progress)
 +    {
 +      if (MEM_P (operands[0]))
 +      {
@@ -1090,8 +1469,9 @@ index 00000000000..a9d7ff55179
 +        if (MEM_P (XEXP (operands[0], 0)))
 +          operands[0] = gen_rtx_MEM (<MODE>mode, force_reg (<MODE>mode, XEXP (operands[0], 0)));
 +      }
-+      else 
-+        if (MEM_P (operands[1]) && MEM_P (XEXP (operands[1], 0)))
++      else
++        if (MEM_P (operands[1])
++            && MEM_P (XEXP (operands[1], 0)))
 +          operands[1] = gen_rtx_MEM (<MODE>mode, force_reg (<MODE>mode, XEXP (operands[1], 0)));
 +    }
 +  }
@@ -1103,63 +1483,75 @@ index 00000000000..a9d7ff55179
 +  }
 +}")
 +
-+(define_insn "*mov<MODE:opmode>"
-+  [(set (match_operand:MODE 0 "nonimmediate_operand" "=r,r,r,W")
-+	(match_operand:MODE 1 "limn2600_general_movsrc_operand" "r,i,W,r"))]
-+  "register_operand (operands[0], <MODE>mode)
-+   || register_operand (operands[1], <MODE>mode)"
++;; mov  rd, <size> [ra + rb xSH imm5]
++;; mov  <size> [ra + rb xSH imm5], rd
++;; mov  rd, <size> [rs + imm16]
++;; mov  <size> [ra + imm16], rb
++;; mov  <size> [ra + imm16], imm5
++(define_insn "*mov<opmode>"
++  [(set (match_operand:MODE 0 "limn2600_general_movdst_operand" "=r,r,rB,r,r,r")
++	(match_operand:MODE 1 "limn2600_general_movsrc_operand" "O,B,rI,J,N,i"))]
++  ""
 +  "@
-+   lr\\t%0, %1
-+   la\\t%0, %1
-+   mov\\t%0, <MODE:memmode> [%1]
-+   mov\\t<MODE:memmode> [%0], %1")
++   add\\t%0, zero, zero
++   mov\\t%0, %1
++   mov\\t%0, %1
++   li\\t%0, %1
++   sub\\t%0, zero, %1
++   la\\t%0, %1"
++   [(set_attr "type" "arith,load,store,arith,arith,arith")])
 +
-+(define_insn "*load<MODE:opmode>_offset<XSHOP:xshop>"
-+  [(set (match_operand:MODE 0 "register_operand" "=r")
-+	(mem:MODE
-+    (plus:SI (match_operand:SI 1 "register_operand" "r")
-+      (XSHOP:SI
-+        (match_operand:SI 2 "register_operand" "r")
-+        (match_operand:SI 3 "immediate_operand" "I")))))]
-+  "register_operand (operands[0], <MODE>mode)
-+   || register_operand (operands[1], <MODE>mode)"
-+  "mov\\t%0, <MODE:memmode> [%1 + %2 <XSHOP:xshop> %3]")
++(define_insn "zero_extendqisi2"
++  [(set (match_operand:SI 0 "register_operand" "=r")
++	(zero_extend:SI (match_operand:QI 1 "nonimmediate_operand" "r")))]
++  ""
++  "andi\\t%0, %1, 0xff")
 +
-+(define_insn "*store<MODE:opmode>_offset<XSHOP:xshop>"
-+  [(set (mem:MODE (plus:SI (match_operand:SI 0 "register_operand" "r")
-+    (XSHOP:SI
-+      (match_operand:SI 1 "register_operand" "r")
-+      (match_operand:SI 2 "immediate_operand" "I"))))
-+    (match_operand:MODE 3 "register_operand" "r"))]
-+  "register_operand (operands[0], <MODE>mode)
-+   || register_operand (operands[1], <MODE>mode)"
-+  "mov\\t<MODE:memmode> [%0 + %1 <XSHOP:xshop> %2], %3")
++(define_insn "zero_extendhisi2"
++  [(set (match_operand:SI 0 "register_operand" "=r")
++	(zero_extend:SI (match_operand:HI 1 "nonimmediate_operand" "r")))]
++  ""
++  "andi\\t%0, %1, 0xffff")
 +
-+(define_insn "*load<MODE:opmode>_offset"
-+  [(set (match_operand:MODE 0 "register_operand" "=r")
-+    (mem:MODE
-+      (plus:SI (match_operand:SI 1 "register_operand" "r")
-+        (match_operand:SI 2 "register_operand" "r"))))]
-+  "register_operand (operands[0], <MODE>mode)
-+   || register_operand (operands[1], <MODE>mode)"
-+  "mov\\t%0, <MODE:memmode> [%1 + %2 lsh 0]")
++;; QI to SI is converting 8-bits to 32-bits, 32-8=24
++(define_insn "extendqisi2"
++  [(set (match_operand:SI 0 "register_operand" "=r")
++	(sign_extend:SI (match_operand:QI 1 "nonimmediate_operand" "r")))]
++  ""
++  "li\\t%0, 24\\n
++  \\tlsh\\t%0, %1, %0\\n
++  \\tli\\t%0, 0x80000000\\n
++  \\tand\\t%0, %1, %0\\n
++  \\tor\\t%0, %0, %1")
 +
-+(define_insn "*store<MODE:opmode>_offset"
-+  [(set (mem:MODE (plus:SI (match_operand:SI 0 "register_operand" "r")
-+    (match_operand:SI 1 "register_operand" "r")))
-+    (match_operand:MODE 2 "register_operand" "r"))]
-+  "register_operand (operands[0], <MODE>mode)
-+   || register_operand (operands[1], <MODE>mode)"
-+  "mov\\t<MODE:memmode> [%0 + %1 lsh 0], %2")
++(define_insn "extendhisi2"
++  [(set (match_operand:SI 0 "register_operand" "=r")
++	(sign_extend:SI (match_operand:HI 1 "nonimmediate_operand" "r")))]
++  ""
++  "li\\t%0, 16\\n
++  \\tlsh\\t%0, %1, %0\\n
++  \\tli\\t%0, 0x80000000\\n
++  \\tand\\t%0, %1, %0\\n
++  \\tor\\t%0, %0, %1")
 +
 +;; -------------------------------------------------------------------------
-+;; Compare instructions
++;; Branch instructions
 +;; -------------------------------------------------------------------------
++
++(define_constants
++  [(CC_REG 34)])
++
++(define_code_iterator cond [ne eq lt ltu gt gtu ge le geu leu])
++(define_code_attr CC [(ne "ne") (eq "eq") (lt "lt") (ltu "ltu") (gt "gt")
++  (ge "ge") (le "le")])
++(define_code_attr rCC [(ne "eq") (eq "ne") (lt "ge") (ltu "geu") (gt "le")
++  (ge "lt") (le "gt")])
++
 +(define_expand "cbranchsi4"
 +  [(set (reg:CC CC_REG)
 +        (compare:CC
 +         (match_operand:SI 1 "general_operand" "")
-+         (match_operand:SI 2 "general_operand" "")))
++         (const_int 0)))
 +   (set (pc)
 +        (if_then_else (match_operator 0 "comparison_operator"
 +                       [(reg:CC CC_REG) (const_int 0)])
@@ -1167,41 +1559,33 @@ index 00000000000..a9d7ff55179
 +                      (pc)))]
 +  ""
 +  "
-+{
-+  /* Force the compare operands into registers.  */
-+  if (GET_CODE (operands[1]) != REG)
++  /* Force the compare operands into registers. */
++  if (!REG_P(operands[1]))
 +	  operands[1] = force_reg (SImode, operands[1]);
-+  if (GET_CODE (operands[2]) != REG)
-+	  operands[2] = force_reg (SImode, operands[2]);
-+}")
++  ")
 +
-+;; -------------------------------------------------------------------------
-+;; Branch instructions
-+;; -------------------------------------------------------------------------
-+(define_code_iterator COND [ne eq lt ltu gt gtu ge le geu leu])
-+(define_code_attr CC [(ne "ne") (eq "eq") (lt "lt") (ltu "ltu") 
-+		      (gt "gt") (gtu "gtu") (ge "ge") (le "le") 
-+		      (geu "geu") (leu "leu") ])
-+(define_code_attr rCC [(ne "eq") (eq "ne") (lt "ge") (ltu "geu") 
-+		       (gt "le") (gtu "leu") (ge "lt") (le "gt") 
-+		       (geu "ltu") (leu "gtu") ])
-+
-+(define_insn "*b<COND:code>"
++(define_insn "*cmpsi"
 +  [(set (reg:CC CC_REG)
-+    (compare:CC
-+      (match_operand:SI 1 "register_operand" "r")
-+      (const_int 0)))
-+  (set (pc)
-+	  (if_then_else (COND (reg:CC CC_REG)
++	(compare:CC
++	 (match_operand:SI 0 "register_operand" "r")
++	 (const_int 0)))]
++  ""
++  ";compare %0=0")
++
++(define_insn "*b<cond:code>"
++  [(set (pc)
++	(if_then_else (cond (reg:CC CC_REG)
 +			    (const_int 0))
 +		      (label_ref (match_operand 0 "" ""))
 +		      (pc)))]
 +  ""
-+  "b<CC>\\t%l0")
++  "b<CC>\\t%l0"
++  [(set_attr "type" "evil_branch")])
 +
 +;; -------------------------------------------------------------------------
 +;; Call and Jump instructions
 +;; -------------------------------------------------------------------------
++
 +(define_expand "call"
 +  [(call (match_operand:QI 0 "memory_operand" "")
 +		(match_operand 1 "general_operand" ""))]
@@ -1211,12 +1595,14 @@ index 00000000000..a9d7ff55179
 +})
 +
 +(define_insn "*call"
-+  [(call (mem:QI (match_operand:SI 0 "nonmemory_operand" "i,r"))
++  [(call (mem:QI (match_operand:SI
++		  0 "nonmemory_operand" "i,r"))
 +	 (match_operand 1 "" ""))]
 +  ""
 +  "@
-+  jal\\t%0
-+  jalr\\tlr, %1, 0")
++  call\\t%0
++  call\\t%0"
++  [(set_attr "type" "good_branch,good_branch")])
 +
 +(define_expand "call_value"
 +  [(set (match_operand 0 "" "")
@@ -1229,32 +1615,39 @@ index 00000000000..a9d7ff55179
 +
 +(define_insn "*call_value"
 +  [(set (match_operand 0 "register_operand" "=r")
-+	(call (mem:QI (match_operand:SI 1 "immediate_operand" "i"))
++	(call (mem:QI (match_operand:SI
++		       1 "immediate_operand" "i"))
 +	      (match_operand 2 "" "")))]
 +  ""
-+  "jalr\\t%0, zero, %1")
++  "call\\t%1"
++  [(set_attr "type" "good_branch")])
 +
 +(define_insn "*call_value_indirect"
-+  [(set (match_operand 0 "register_operand" "=r")
-+	(call (mem:QI (match_operand:SI 1 "immediate_operand" "r"))
-+	      (match_operand 2 "" "")))]
++  [(set (match_operand:SI 0 "register_operand" "=r")
++	(call (mem:QI (match_operand:SI
++		       1 "register_operand" "r"))
++	      (match_operand:SI 2 "register_operand" "r")))]
 +  ""
-+  "jalr\\t%0, %1, 0")
++  "mov %2, long [%1]\\n\\tcall\\t%2"
++  [(set_attr "type" "good_branch")])
 +
 +(define_insn "indirect_jump"
 +  [(set (pc) (match_operand:SI 0 "nonimmediate_operand" "r"))]
 +  ""
-+  "j\\t%0")
++  "jsr\\t%0"
++  [(set_attr "type" "good_branch")])
 +
 +(define_insn "jump"
 +  [(set (pc)
 +	(label_ref (match_operand 0 "" "")))]
 +  ""
-+  "j\\t%l0")
++  "j\\t%l0"
++  [(set_attr "type" "good_branch")])
 +
 +;; -------------------------------------------------------------------------
 +;; Prologue & Epilogue
 +;; -------------------------------------------------------------------------
++
 +(define_expand "prologue"
 +  [(clobber (const_int 0))]
 +  ""
@@ -1262,7 +1655,8 @@ index 00000000000..a9d7ff55179
 +{
 +  limn2600_expand_prologue ();
 +  DONE;
-+}")
++}
++")
 +
 +(define_expand "epilogue"
 +  [(return)]
@@ -1271,12 +1665,14 @@ index 00000000000..a9d7ff55179
 +{
 +  limn2600_expand_epilogue ();
 +  DONE;
-+}")
++}
++")
 +
 +(define_insn "returner"
 +  [(return)]
-+  "reload_completed"
-+  "ret")
++  ""
++  "ret"
++  [(set_attr "type" "good_branch")])
 diff --git a/gcc/config/limn2600/limn2600.opt b/gcc/config/limn2600/limn2600.opt
 new file mode 100644
 index 00000000000..55375c7b4b7
