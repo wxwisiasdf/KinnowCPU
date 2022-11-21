@@ -12,3 +12,8 @@ start:
 jmp_test:
     addi t0, t0, 1
     jalr zero, lr, 0
+
+.section data
+.dl 0
+.section bss
+.dl 0

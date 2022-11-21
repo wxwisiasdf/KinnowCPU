@@ -30,16 +30,19 @@ module l2k_cache
     endfunction
 
     reg [DATA_WIDTH - 1:0] cache[0:NUM_ENTRIES - 1];
-    always @* begin
-        if(rst) begin
-            $display("%m: Reset");
-            for(i = 0; i < NUM_ENTRIES; i++) begin
+    always @(posedge clk) begin
+        $display("%m: Reset");
+        for(i = 0; i < NUM_ENTRIES; i++) begin
+            if(rst) begin
                 cache[i] = 0;
             end
         end
     end
 
-    assign data_out = cache[hash_result(addr_out) & (NUM_ENTRIES - 1)];
+    // This weird ternary saves us 1 cycle every read
+    assign data_out = (addr_in == addr_out) ? data_in
+        : cache[hash_result(addr_out) & (NUM_ENTRIES - 1)];
+    
     always @(posedge clk) begin
         $display("%m: k_out=0x%h,v_out=0x%h,k_in=0x%h,v_in=0x%h,we=%b,k_out_hash=0x%h,k_in_hash=0x%h", addr_out, data_out, addr_in, data_in, we, hash_result(addr_out), hash_result(addr_in));
         for(i = 0; i < NUM_ENTRIES; i++) begin
@@ -51,7 +54,7 @@ module l2k_cache
                 //$display("%m: cache #%2d data=0x%h", i, cache[i]);
             end
         end
-        
+
         if(we) begin
             cache[hash_result(addr_in) & (NUM_ENTRIES - 1)] <= data_in;
         end

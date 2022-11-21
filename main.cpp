@@ -141,6 +141,7 @@ int main(int argc, char **argv, char **env)
 
         SDL_Rect dstrect;
         int left_padding = 0;
+#if 0
         if (show_rom)
         {
             dstrect.x = x_offset + left_padding;
@@ -177,6 +178,7 @@ int main(int argc, char **argv, char **env)
             SDL_RenderCopy(renderer, nvram_texture, NULL, &dstrect);
             left_padding += dstrect.w;
         }
+#endif
 
         SDL_RenderPresent(renderer);
         printf("perf: End tick\n");

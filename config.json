@@ -6,22 +6,20 @@
     "FP_SIZING": "absolute",
     "DIE_AREA": [ 0, 0, 500, 500 ],
     "SYNTH_NO_FLAT": true,
+    "SYNTH_FLAT_TOP": false,
+    "PSN_ENABLE_PIN_SWAP": false,
+    "PL_OPENPHYSYN_OPTIMIZATIONS": false,
+    "FP_ASPECT_RATIO": 0.85,
+    "ROUTING_OPT_ITERS": 8,
+    "SYNTH_STRATEGY": "DELAY 0",
+    "PL_TARGET_DENSITY": 0.2,
+    "PSN_ENABLE_RESIZING": false,
+    "GRT_ESTIMATE_PARASITICS": false,
+    "FP_PIN_ORDER_CFG": "dir::pin_order.cfg",
     "pdk::sky130*": {
-        "CLOCK_PERIOD": 20,
-        "SYNTH_MAX_FANOUT": 6,
-        "FP_CORE_UTIL": 40,
-        "scl::sky130_fd_sc_hd": {
-            "SYNTH_STRATEGY": "DELAY 2"
-        },
-        "scl::sky130_fd_sc_hs": {
-            "FP_CORE_UTIL": 35
-        },
-        "scl::sky130_fd_sc_ms": {
-            "FP_CORE_UTIL": 35
-        }
+        "CLOCK_PERIOD": 20
     },
     "pdk::gf180mcu*": {
-        "DIODE_INSERTION_STRATEGY": "6",
-        "PL_TARGET_DENSITY": 0.62
+        "DIODE_INSERTION_STRATEGY": "2"
     }
 }

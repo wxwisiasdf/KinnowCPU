@@ -47,7 +47,6 @@ module l2k_msched
         bit [1:0] size;
     } st_memory_command;
     st_memory_command cmds[0:MAX_CMDS - 1];
-    st_memory_command exec_cmd;
 
     reg [4:0] curr_client_cmd;
     reg [4:0] curr_exec_cmd;
@@ -113,7 +112,7 @@ module l2k_msched
         client_write_rdy <= 0;
         full <= 1; // Check if we're full or not
         for (i = 0; i < MAX_CMDS; i++) begin
-            if(i == curr_client_cmd) begin
+            if({ 27'h0, curr_client_cmd } == i) begin
                 if(!cmds[i].enable) begin
                     full <= 0; // Not full!
                     if(client_read_enable) begin
@@ -160,7 +159,10 @@ module l2k_msched
         client_write_rdy <= 0;
         ram_ce <= 0; // Disable unless enabled
         for (i = 0; i < MAX_CMDS; i++) begin
-            if(i == curr_exec_cmd) begin
+            if(rst) begin
+                cmds[i].enable <= 0;
+            end
+            if(!rst && { 27'h0, curr_exec_cmd } == i) begin
                 ram_addr <= cmds[i].addr;
                 // Make sure not to read what is being written at the same time ;)
                 if(curr_exec_cmd != curr_client_cmd && cmds[i].enable) begin

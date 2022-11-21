@@ -18,7 +18,8 @@ module l2k_cpu
     input clk,
     input irq,
     output [31:0] addr,
-    inout [31:0] data,
+    input [31:0] data_in,
+    output [31:0] data_out,
     input rdy, // Whetever we can fetch instructions
     output we, // Write-Enable (1 = we want to write, 0 = we want to read)
     output ce // Command-State (1 = memory commands active, 0 = memory commands ignored)
@@ -38,14 +39,12 @@ module l2k_cpu
     wire core1_full;
     wire core1_flush;
     
-    reg [31:0] core1_ram_data_in;
-    reg [31:0] core1_ram_data_out;
     l2k_msched memsched(
         .rst(rst),
         .clk(clk),
         .ram_addr(addr),
-        .ram_data_in(core1_ram_data_in),
-        .ram_data_out(core1_ram_data_out),
+        .ram_data_in(data_in),
+        .ram_data_out(data_out),
         .ram_rdy(rdy),
         .ram_we(we),
         .ram_ce(ce),
@@ -82,14 +81,4 @@ module l2k_cpu
         .full(core1_full),
         .flush(core1_flush)
     );
-
-    always @(posedge clk) begin
-        if(rdy && ce) begin
-            if(we) begin
-                data <= core1_ram_data_out;
-            end else begin
-                core1_ram_data_in <= data;
-            end
-        end
-    end
 endmodule

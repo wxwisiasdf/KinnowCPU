@@ -14,3 +14,8 @@ jmp_test:
     addi t1, t1, 4
     mov long [t1 + 0], t0
     jalr zero, lr, 0
+
+.section data
+.dl 0
+.section bss
+.dl 0

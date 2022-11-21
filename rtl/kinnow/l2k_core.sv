@@ -32,17 +32,7 @@ module l2k_core
     input full,
     output reg flush
 );
-    typedef struct packed {
-        bit [20:0] vpn;
-        bit [(31 - 21):(21 - 21)] asid;
-        bit v;
-        bit write;
-        bit k;
-        bit nc;
-        bit g;
-        bit [(25 - 5):(5 - 5)] ppn;
-        bit [(31 - 25):(25 - 25)] avail;
-    } tlb_entry;
+    reg [31:0] saved_read_addr;
 
 `define PERFORM_FETCH(a_addr) \
     io_state <= SI_REFETCH; \
@@ -62,16 +52,22 @@ module l2k_core
 
 // Prepare a read of data, usually for MOV+R
 `define READ_IN(a_read_addr, a_read_reg, a_size) \
+    $display("%m: Reading 0x%h", a_read_addr); \
     io_state <= SI_READ; \
+    saved_read_addr <= a_read_addr; \
+    read_regno <= a_read_reg; \
     read_addr <= a_read_addr; \
     read_size <= a_size; \
-    read_enable <= 1; \
+    read_enable <= 1;
 
 `define WRITE_OUT(a_write_addr, a_data, a_size) \
     write_addr <= a_write_addr; \
     write_value <= a_data; \
     write_size <= a_size; \
     write_enable <= 1;
+
+`define REGISTER_AVAILABLE(regno) \
+    (((read_regno == regno) & read_enable) == 0)
 
     function [31:0] do_alu_shift(
         input [31:0] a,
@@ -83,6 +79,30 @@ module l2k_core
             2'b01: do_alu_shift = a >> b; // Right shift
             2'b10: do_alu_shift = { a[31], 31'h0 } | (a >> b); // Arithmethic shift
             2'b11: do_alu_shift = `ROR(a, b, 32); // ROR
+        endcase
+    endfunction
+
+    // jjjj jjjj jjjj jjjj jjjj jaaa aa11 1101			beq  ra, imm21		if (ra == 0) pc = pc + signext(j)<<2			
+    // jjjj jjjj jjjj jjjj jjjj jaaa aa11 0101			bne  ra, imm21		if (ra != 0) pc = pc + signext(j)<<2			
+    // jjjj jjjj jjjj jjjj jjjj jaaa aa10 1101			blt  ra, imm21		if (ra  < 0) pc = pc + signext(j)<<2			
+    // jjjj jjjj jjjj jjjj jjjj jaaa aa10 0101			bgt  ra, imm21		if (ra  > 0) pc = pc + signext(j)<<2			
+    // jjjj jjjj jjjj jjjj jjjj jaaa aa01 1101			bge  ra, imm21		if (ra >= 0) pc = pc + signext(j)<<2			
+    // jjjj jjjj jjjj jjjj jjjj jaaa aa01 0101			ble  ra, imm21		if (ra <= 0) pc = pc + signext(j)<<2			
+    // jjjj jjjj jjjj jjjj jjjj jaaa aa00 1101			bpe  ra, imm21		if (ra&1 == 0) pc = pc + signext(j)<<2			
+    // jjjj jjjj jjjj jjjj jjjj jaaa aa00 0101			bpo  ra, imm21		if (ra&1 == 1) pc = pc + signext(j)<<2	
+    function [0:0] compare_result(
+        input [2:0] op,
+        input [31:0] a
+    );
+        casez(op)
+            3'b111: compare_result = a == 0; // beq
+            3'b110: compare_result = a != 0; // bne
+            3'b101: compare_result = $signed(a) < 0; // blt
+            3'b100: compare_result = $signed(a) > 0; // bgt
+            3'b011: compare_result = $signed(a) >= 0; // bge
+            3'b010: compare_result = $signed(a) <= 0; // ble
+            3'b001: compare_result = (a & 1) == 0; // bpe
+            3'b000: compare_result = (a & 1) == 1; // bpo
         endcase
     endfunction
 
@@ -104,7 +124,7 @@ module l2k_core
     localparam SI_REFETCH = 2;
     localparam SI_READ = 3;
     reg [3:0] ex_state;
-    localparam SE_STALL = 0;
+    localparam SE_WAIT_FETCH = 0;
     localparam SE_EXECUTE = 1;
     localparam SE_HALT = 2;
     localparam SE_BRANCHED = 3;
@@ -169,19 +189,6 @@ module l2k_core
 
     integer i;
 
-    // TLB cache
-    reg tlb_we;
-    wire [63:0] tlb_data_out;
-    l2k_cache #(.NUM_ENTRIES(128), .DATA_WIDTH(64)) tlb_cache(
-        .rst(rst),
-        .clk(clk),
-        .we(tlb_we),
-        .addr_in(ctl_regs[CREG_TBINDEX]),
-        .data_in({ ctl_regs[CREG_TBHI], ctl_regs[CREG_TBLO] }),
-        .addr_out(ctl_regs[CREG_TBINDEX]),
-        .data_out(tlb_data_out)
-    );
-
     wire [31:0] alu_imm_out;
     l2k_alu alu_imm(
         .op(inst_lo[5:3]),
@@ -219,10 +226,17 @@ module l2k_core
         if(!full) begin
             if(io_state == SI_READ) begin
                 $display("%m: SI_READ");
-                ex_state <= SE_STALL;
+                read_enable <= 1;
+                read_addr <= saved_read_addr;
                 if(read_rdy) begin
-                    regs[read_regno] <= read_value;
-                    `PERFORM_FETCH(pc);
+                    if(read_addr == saved_read_addr) begin
+                        $display("%m: SI_READ; received=0x%h", read_value);
+                        regs[read_regno] <= read_value;
+                        `PERFORM_FETCH(pc);
+                    end else begin // Unrelated data, send to i-cache
+                        $display("%m: SI_FETCH; pc=0x%8h,ir=0x%8h", read_addr_in, read_value);
+                        icache_we <= 1; // Update!
+                    end
                 end
             end else if(io_state == SI_FETCH) begin
                 read_enable <= 1;
@@ -244,7 +258,9 @@ module l2k_core
             end
         end else begin
             $display("%m: Waiting for memory scheduler buffers to flush");
-            io_state <= SI_REFETCH;
+            if(io_state == SI_FETCH) begin
+                io_state <= SI_REFETCH;
+            end
         end
         if(rst) begin
             fetch_offset <= 0;//{ 32'hFFFE0000 }[11:0];
@@ -279,106 +295,19 @@ module l2k_core
                     end
                     `BRANCH_TO((pc & 32'h80000000) | ({ 3'h0, imm29 } << 2));
                     end
-                6'b11_1101: begin // BEQ ra, [imm21]
-                    if(regs[opreg1] == 32'h0) begin
+                6'b??_?101: begin // Branches ra, [imm21]
+                    if(compare_result(inst_lo[5:3], regs[opreg1])) begin
                         $display("%m: Branch taken!");
                         if(imm21[20] == 1) begin // Negative
-                            $display("%m: beq r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
+                            $display("%m: bx r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
                             `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
                         end else begin // Positive
-                            $display("%m: beq r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
+                            $display("%m: bx r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
                             `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
                         end
-                    end
-                    end
-                6'b11_0101: begin // BNE ra, [imm21]
-                    if(regs[opreg1] != 32'h0) begin
-                        $display("%m: Branch taken!");
-                        if(imm21[20] == 1) begin // Negative
-                            $display("%m: bne r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
-                            `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
-                        end else begin // Positive
-                            $display("%m: bne r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
-                            `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
-                        end
-                    end
-                    end
-                6'b10_1101: begin // BLT ra, [imm21]
-                    // Branch taken if it's less than 0 (signed comparison)
-                    if(regs[opreg1][31] == 1) begin
-                        $display("%m: Branch taken!");
-                        if(imm21[20] == 1) begin // Negative
-                            $display("%m: blt r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
-                            `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
-                        end else begin // Positive
-                            $display("%m: blt r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
-                            `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
-                        end
-                    end
-                    end
-                6'b10_0101: begin // BGT ra, [imm21]
-                    // Branch taken if it's bigger than 0 (signed comparison)
-                    if(regs[opreg1][31] == 0 && regs[opreg1] != 0) begin
-                        $display("%m: Branch taken!");
-                        if(imm21[20] == 1) begin // Negative
-                            $display("%m: bgt r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
-                            `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
-                        end else begin // Positive
-                            $display("%m: bgt r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
-                            `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
-                        end
-                    end
-                    end
-                6'b01_1101: begin // BGE ra, [imm21]
-                    // Branch taken if it's greater or equal to 0 (signed comparison)
-                    if(regs[opreg1][31] == 0) begin
-                        $display("%m: Branch taken!");
-                        if(imm21[20] == 1) begin // Negative
-                            $display("%m: bge r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
-                            `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
-                        end else begin // Positive
-                            $display("%m: bge r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
-                            `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
-                        end
-                    end
-                    end
-                6'b01_0101: begin // BLE ra, [imm21]
-                    // Branch taken if it's lesser or equal to 0 (signed comparison)
-                    if(regs[opreg1][31] == 1 || regs[opreg1] == 0) begin
-                        $display("%m: Branch taken!");
-                        if(imm21[20] == 1) begin // Negative
-                            $display("%m: ble r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
-                            `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
-                        end else begin // Positive
-                            $display("%m: ble r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
-                            `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
-                        end
-                    end
-                    end
-                6'b00_1101: begin // BPE ra, [imm21]
-                    // Branch taken if first bit is clear
-                    if(regs[opreg1][0] == 0) begin
-                        $display("%m: Branch taken!");
-                        if(imm21[20] == 1) begin // Negative
-                            $display("%m: bpe r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
-                            `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
-                        end else begin // Positive
-                            $display("%m: bpe r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
-                            `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
-                        end
-                    end
-                    end
-                6'b00_0101: begin // BPO ra, [imm21]
-                    // Branch taken if first bit is set
-                    if(regs[opreg1][0] == 0) begin
-                        $display("%m: Branch taken!");
-                        if(imm21[20] == 1) begin // Negative
-                            $display("%m: bpo r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
-                            `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
-                        end else begin // Positive
-                            $display("%m: bpo r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
-                            `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
-                        end
+                    end else begin
+                        $display("%m: Branch NOT taken!");
+                        $display("%m: bx r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
                     end
                     end
                 // ADDI [rd], [rd], [imm16]
@@ -446,6 +375,9 @@ module l2k_core
                         end
                     4'b1000: begin // CACHEI [imm22]
                         $display("%m: cachei [%h]", imm22);
+                        if(imm22 == 5) begin
+                            ex_state <= SE_WAIT_FETCH;
+                        end
                         end
                     4'b1010: begin // FWC [imm22]
                         $display("%m: exception firmware");
@@ -472,7 +404,7 @@ module l2k_core
                         end
                     4'b0000: begin // TBWR
                         $display("%m: tbwr [%0d]", imm22);
-                        tlb_we <= 1; // Set TLB entry
+                        //tlb_we <= 1; // Set TLB entry
                         end
                     default: begin // Invalid instruction
                         $display("%m: exception invalid_grp2=0b%b", inst_hi[5:2]);
@@ -533,13 +465,20 @@ module l2k_core
                     `RAISE_EXCEPTION(ECAUSE_INVALID_INST);
                 end
             endcase
+        end else if(ex_state == SE_WAIT_FETCH) begin
+            if(io_state == SI_FETCH) begin
+                if({ 1'h0, fetch_offset } > ({ 1'h0, pc[11:0] } + 128)) begin
+                    ex_state <= SE_EXECUTE;
+                end
+            end
+            pc <= pc;
         end else if(ex_state == SE_GET_TLB_ENTRY) begin // TODO: RDY for TLB
-            ctl_regs[CREG_TBHI] <= tlb_data_out[63:32]; // TODO: Is this correct?
-            ctl_regs[CREG_TBLO] <= tlb_data_out[31:0];
+            //ctl_regs[CREG_TBHI] <= tlb_data_out[63:32]; // TODO: Is this correct?
+            //ctl_regs[CREG_TBLO] <= tlb_data_out[31:0];
             pc <= pc;
         end else if(ex_state == SE_GET_TLB_FN) begin // TODO: RDY for TLB
             // By now data from the TLB has arrived, negative values will be given for indicating NOT-FOUND
-            ctl_regs[CREG_TBINDEX] <= tlb_data_out[31:0];
+            //ctl_regs[CREG_TBINDEX] <= tlb_data_out[31:0];
             pc <= pc;
         end
         if(rst) begin

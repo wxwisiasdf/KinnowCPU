@@ -31,6 +31,10 @@ putc:
     mov byte [t0 + 4], s0
     ret
 
+.section data
 msg:
     .ds "Hello world!"
     .db 0
+
+.section bss
+.dl 0
