@@ -1,16 +1,17 @@
-`include "rtl/cache.sv"
-`include "rtl/alu.sv"
-`include "rtl/msched.sv"
-
 ///////////////////////////////////////////////////////////////////////////////
 //
-// Limn2600 Core
+// Limn2600 l2k_core
 //
 // Executes an instruction, multiple instances of this module are used
 // for executing the whole instruction queue
 //
 ///////////////////////////////////////////////////////////////////////////////
-module limn2600_Core
+
+`include "defines.sv"
+`include "l2k_cache.sv"
+`include "l2k_alu.sv"
+
+module l2k_core
 ( // Interface
     input rst,
     input clk,
@@ -31,53 +32,46 @@ module limn2600_Core
     input full,
     output reg flush
 );
-    function void perform_fetch(
-        input [31:0] a_addr
-    );
-        io_state <= SI_REFETCH;
-        pc <= a_addr;
-    endfunction
+    typedef struct packed {
+        bit [20:0] vpn;
+        bit [(31 - 21):(21 - 21)] asid;
+        bit v;
+        bit write;
+        bit k;
+        bit nc;
+        bit g;
+        bit [(25 - 5):(5 - 5)] ppn;
+        bit [(31 - 25):(25 - 25)] avail;
+    } tlb_entry;
 
-    function void raise_exception(
-        input [3:0] cause
-    );
-        ctl_regs[CREG_EBADADDR] <= pc;
-        ctl_regs[CREG_EPC] <= pc;
-        ctl_regs[CREG_RS][31:28] <= cause;
-        ctl_regs[CREG_ERS] <= ctl_regs[CREG_RS];
-        perform_fetch(ctl_regs[CREG_EVEC]); // Switch to fetch state
-    endfunction
+`define PERFORM_FETCH(a_addr) \
+    io_state <= SI_REFETCH; \
+    pc <= a_addr;
 
-    // Branches into the given address, resets PC and tells to refetch properly
-    function void branch_to(
-        input [31:0] new_pc
-    );
-        $display("%m: Branched to 0x%h", new_pc);
-        perform_fetch(new_pc);
-    endfunction
+`define RAISE_EXCEPTION(cause) \
+    ctl_regs[CREG_EBADADDR] <= pc; \
+    ctl_regs[CREG_EPC] <= pc; \
+    ctl_regs[CREG_RS][31:28] <= cause; \
+    ctl_regs[CREG_ERS] <= ctl_regs[CREG_RS]; \
+    `PERFORM_FETCH(ctl_regs[CREG_EVEC]); // Switch to fetch state
 
-    // Prepare a read of data, usually for MOV+R
-    function void read_in(
-        input [31:0] a_read_addr, // Address to read from
-        input [4:0] a_read_reg, // Register to place read value into
-        input [1:0] a_size // Size of transfer
-    );
-        io_state <= SI_READ;
-        read_addr <= a_read_addr;
-        read_size <= a_size;
-        read_enable <= 1;
-    endfunction
+// Branches into the given address, resets PC and tells to refetch properly
+`define BRANCH_TO(new_pc) \
+    $display("%m: Branched to 0x%h", new_pc); \
+    `PERFORM_FETCH(new_pc);
 
-    function void write_out(
-        input [31:0] a_write_addr, // Address to write into
-        input [31:0] a_data, // Data to write
-        input [1:0] a_size // Size of transfer
-    );
-        write_addr <= a_write_addr;
-        write_value <= a_data;
-        write_size <= a_size;
-        write_enable <= 1;
-    endfunction
+// Prepare a read of data, usually for MOV+R
+`define READ_IN(a_read_addr, a_read_reg, a_size) \
+    io_state <= SI_READ; \
+    read_addr <= a_read_addr; \
+    read_size <= a_size; \
+    read_enable <= 1; \
+
+`define WRITE_OUT(a_write_addr, a_data, a_size) \
+    write_addr <= a_write_addr; \
+    write_value <= a_data; \
+    write_size <= a_size; \
+    write_enable <= 1;
 
     function [31:0] do_alu_shift(
         input [31:0] a,
@@ -88,7 +82,7 @@ module limn2600_Core
             2'b00: do_alu_shift = a << b; // Left shift
             2'b01: do_alu_shift = a >> b; // Right shift
             2'b10: do_alu_shift = { a[31], 31'h0 } | (a >> b); // Arithmethic shift
-            2'b11: do_alu_shift = (a >> b) | (a << (32 - b)); // ROR
+            2'b11: do_alu_shift = `ROR(a, b, 32); // ROR
         endcase
     endfunction
 
@@ -120,7 +114,7 @@ module limn2600_Core
 
     wire [31:0] inst; // Instruction to execute
     reg icache_we;
-    limn2600_Cache #(.NUM_ENTRIES(8192)) icache_cache(
+    l2k_cache #(.NUM_ENTRIES(512)) icache_cache(
         .rst(rst),
         .clk(clk),
         .we(icache_we),
@@ -177,24 +171,19 @@ module limn2600_Core
 
     // TLB cache
     reg tlb_we;
-    reg [31:0] tlb_addr_in; // Input to the TLB
-    reg [31:0] tlb_data_in;
-    reg [31:0] tlb_addr_out; // Output from the TLB
-    wire [31:0] tlb_data_out;
-    limn2600_Cache tlb_cache(
+    wire [63:0] tlb_data_out;
+    l2k_cache #(.NUM_ENTRIES(128), .DATA_WIDTH(64)) tlb_cache(
         .rst(rst),
         .clk(clk),
         .we(tlb_we),
-        .addr_in(tlb_addr_in),
-        .data_in(tlb_data_in),
-        .addr_out(tlb_addr_out),
+        .addr_in(ctl_regs[CREG_TBINDEX]),
+        .data_in({ ctl_regs[CREG_TBHI], ctl_regs[CREG_TBLO] }),
+        .addr_out(ctl_regs[CREG_TBINDEX]),
         .data_out(tlb_data_out)
     );
 
     wire [31:0] alu_imm_out;
-    limn2600_ALU alu_imm(
-        .rst(rst),
-        .clk(clk),
+    l2k_alu alu_imm(
         .op(inst_lo[5:3]),
         .a(regs[opreg2]),
         .b({ 16'b0, imm16 }),
@@ -202,9 +191,7 @@ module limn2600_Core
     );
 
     wire [31:0] alu_reg_out;
-    limn2600_ALU alu_reg(
-        .rst(rst),
-        .clk(clk),
+    l2k_alu alu_reg(
         .op(inst_hi[4:2]),
         .a(regs[opreg2]),
         .b(do_alu_shift(regs[opreg3], { 27'h0, imm5_lo }, opg1_instmode)),
@@ -218,7 +205,7 @@ module limn2600_Core
             ex_state <= SE_EXECUTE;
         end else if(irq) begin
             $display("%m: Interruption!");
-            raise_exception(ECAUSE_INTERRUPT);
+            `RAISE_EXCEPTION(ECAUSE_INTERRUPT);
         end
         regs[0] <= 0;
     end
@@ -235,7 +222,7 @@ module limn2600_Core
                 ex_state <= SE_STALL;
                 if(read_rdy) begin
                     regs[read_regno] <= read_value;
-                    perform_fetch(pc);
+                    `PERFORM_FETCH(pc);
                 end
             end else if(io_state == SI_FETCH) begin
                 read_enable <= 1;
@@ -280,9 +267,9 @@ module limn2600_Core
                     $display("%m: jalr r%0d,r%0d,[%h]", opreg1, opreg2, { 8'h0, imm16 } << 2);
                     regs[opreg1] <= pc + 4;
                     if(imm21[15] == 1) begin // Negative
-                        branch_to(regs[opreg2] - (4 + ({ 17'h0, ~imm16[14:0] } << 2)));
+                        `BRANCH_TO(regs[opreg2] - (4 + ({ 17'h0, ~imm16[14:0] } << 2)));
                     end else begin // Positive
-                        branch_to(regs[opreg2] + ({ 16'h0, imm16 } << 2));
+                        `BRANCH_TO(regs[opreg2] + ({ 16'h0, imm16 } << 2));
                     end
                     end
                 6'b??_?11?: begin // JAL [imm29]
@@ -290,17 +277,17 @@ module limn2600_Core
                     if(inst[0] == 1) begin
                         regs[REG_LR] <= pc + 4;
                     end
-                    branch_to((pc & 32'h80000000) | ({ 3'h0, imm29 } << 2));
+                    `BRANCH_TO((pc & 32'h80000000) | ({ 3'h0, imm29 } << 2));
                     end
                 6'b11_1101: begin // BEQ ra, [imm21]
                     if(regs[opreg1] == 32'h0) begin
                         $display("%m: Branch taken!");
                         if(imm21[20] == 1) begin // Negative
                             $display("%m: beq r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
-                            branch_to(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
+                            `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
                         end else begin // Positive
                             $display("%m: beq r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
-                            branch_to(pc + ({ 12'h0, imm21[19:0] } << 2));
+                            `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
                         end
                     end
                     end
@@ -309,10 +296,10 @@ module limn2600_Core
                         $display("%m: Branch taken!");
                         if(imm21[20] == 1) begin // Negative
                             $display("%m: bne r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
-                            branch_to(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
+                            `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
                         end else begin // Positive
                             $display("%m: bne r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
-                            branch_to(pc + ({ 12'h0, imm21[19:0] } << 2));
+                            `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
                         end
                     end
                     end
@@ -322,10 +309,10 @@ module limn2600_Core
                         $display("%m: Branch taken!");
                         if(imm21[20] == 1) begin // Negative
                             $display("%m: blt r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
-                            branch_to(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
+                            `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
                         end else begin // Positive
                             $display("%m: blt r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
-                            branch_to(pc + ({ 12'h0, imm21[19:0] } << 2));
+                            `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
                         end
                     end
                     end
@@ -335,10 +322,10 @@ module limn2600_Core
                         $display("%m: Branch taken!");
                         if(imm21[20] == 1) begin // Negative
                             $display("%m: bgt r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
-                            branch_to(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
+                            `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
                         end else begin // Positive
                             $display("%m: bgt r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
-                            branch_to(pc + ({ 12'h0, imm21[19:0] } << 2));
+                            `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
                         end
                     end
                     end
@@ -348,10 +335,10 @@ module limn2600_Core
                         $display("%m: Branch taken!");
                         if(imm21[20] == 1) begin // Negative
                             $display("%m: bge r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
-                            branch_to(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
+                            `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
                         end else begin // Positive
                             $display("%m: bge r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
-                            branch_to(pc + ({ 12'h0, imm21[19:0] } << 2));
+                            `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
                         end
                     end
                     end
@@ -361,10 +348,10 @@ module limn2600_Core
                         $display("%m: Branch taken!");
                         if(imm21[20] == 1) begin // Negative
                             $display("%m: ble r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
-                            branch_to(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
+                            `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
                         end else begin // Positive
                             $display("%m: ble r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
-                            branch_to(pc + ({ 12'h0, imm21[19:0] } << 2));
+                            `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
                         end
                     end
                     end
@@ -374,10 +361,10 @@ module limn2600_Core
                         $display("%m: Branch taken!");
                         if(imm21[20] == 1) begin // Negative
                             $display("%m: bpe r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
-                            branch_to(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
+                            `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
                         end else begin // Positive
                             $display("%m: bpe r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
-                            branch_to(pc + ({ 12'h0, imm21[19:0] } << 2));
+                            `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
                         end
                     end
                     end
@@ -387,10 +374,10 @@ module limn2600_Core
                         $display("%m: Branch taken!");
                         if(imm21[20] == 1) begin // Negative
                             $display("%m: bpo r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
-                            branch_to(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
+                            `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
                         end else begin // Positive
                             $display("%m: bpo r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
-                            branch_to(pc + ({ 12'h0, imm21[19:0] } << 2));
+                            `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
                         end
                     end
                     end
@@ -414,15 +401,15 @@ module limn2600_Core
                     end
                 6'b1?_?011: begin // MOV rd, [rs + imm16]
                     $display("%m: mov(5)(R) r%0d,[r%0d+%h],sz=%b", opreg1, opreg2, { 8'h0, imm16 }, mov_simple_tsz);
-                    read_in(regs[opreg2] + ({ 16'h0, imm16} << (~mov_simple_tsz)), opreg1, mov_simple_tsz);
+                    `READ_IN(regs[opreg2] + ({ 16'h0, imm16} << (~mov_simple_tsz)), opreg1, mov_simple_tsz);
                     end
                 6'b??_?010: begin // MOV [ra + imm16], rb
                     if(inst_lo[5] == 1) begin // Move register to memory
                         $display("%m: mov(16)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 } << (~mov_simple_tsz), opreg2, mov_simple_tsz);
-                        write_out(regs[opreg1] + ({ 16'h0, imm16} << (~mov_simple_tsz)), regs[opreg2], ~mov_simple_tsz);
+                        `WRITE_OUT(regs[opreg1] + ({ 16'h0, imm16} << (~mov_simple_tsz)), regs[opreg2], ~mov_simple_tsz);
                     end else begin // Move immediate to memory
                         $display("%m: mov(5)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 } << (~mov_simple_tsz), opreg2, mov_simple_tsz);
-                        write_out(regs[opreg1] + ({ 16'h0, imm16} << (~mov_simple_tsz)), { 27'h0, imm5 }, ~mov_simple_tsz);
+                        `WRITE_OUT(regs[opreg1] + ({ 16'h0, imm16} << (~mov_simple_tsz)), { 27'h0, imm5 }, ~mov_simple_tsz);
                     end
                     end
                 // Instructions starting with 111001
@@ -435,13 +422,13 @@ module limn2600_Core
                             end
                         4'b11??: begin // Move-From-Registers
                             $display("%m: mov(W)(REG) [r%0d+r%0d+%d],r%0d,sz=%b", opreg2, opreg3, imm5_lo, opreg1, mov_comp_tsz);
-                            write_out(regs[opreg2] + (do_alu_shift(regs[opreg3], { 27'h0, imm5_lo }, opg1_instmode) << (~mov_comp_tsz)), regs[opreg1], ~mov_comp_tsz);
+                            `WRITE_OUT(regs[opreg2] + (do_alu_shift(regs[opreg3], { 27'h0, imm5_lo }, opg1_instmode) << (~mov_comp_tsz)), regs[opreg1], ~mov_comp_tsz);
                             end
                         4'b10??: begin // Move-To-Register
                             $display("%m: mov(R)(REG) r%0d,[r%0d+r%0d+%d],sz=%b", opreg1, opreg2, opreg3, imm5_lo, mov_comp_tsz);
-                            read_in(regs[opreg2] + (do_alu_shift(regs[opreg3], { 27'h0, imm5_lo }, opg1_instmode) << (~mov_comp_tsz)), opreg1, ~mov_comp_tsz);
+                            `READ_IN(regs[opreg2] + (do_alu_shift(regs[opreg3], { 27'h0, imm5_lo }, opg1_instmode) << (~mov_comp_tsz)), opreg1, ~mov_comp_tsz);
                             end
-                        default: begin // Assume this is a general ALU OP and perform a normal operation
+                        default: begin // Assume this is a general l2k_alu OP and perform a normal operation
                             regs[opreg1] <= alu_reg_out;
                             end
                     endcase
@@ -464,7 +451,7 @@ module limn2600_Core
                         $display("%m: exception firmware");
                         ctl_regs[CREG_EBADADDR] <= pc;
                         ctl_regs[CREG_RS][31:28] <= ECAUSE_SYSCALL;
-                        branch_to(ctl_regs[CREG_FWVEC]);
+                        `BRANCH_TO(ctl_regs[CREG_FWVEC]);
                         end
                     4'b1100: begin // HLT [imm22]
                         $display("%m: hlt [%h]", imm22);
@@ -477,22 +464,19 @@ module limn2600_Core
                     4'b0010: begin // TBLO
                         $display("%m: tblo [%0d]", imm22);
                         ex_state <= SE_GET_TLB_ENTRY; // Next cycle is guaranteed to output in tlb_data_out the given tlb
-                        tlb_addr_out <= ctl_regs[CREG_TBINDEX];
                         end
                     4'b0001: begin // TBFN
                         $display("%m: tbfn [%0d]", imm22);
                         ex_state <= SE_GET_TLB_FN;
-                        tlb_data_in <= ctl_regs[CREG_TBLO];
+                        //tlb_data_in <= ctl_regs[CREG_TBLO];
                         end
                     4'b0000: begin // TBWR
                         $display("%m: tbwr [%0d]", imm22);
                         tlb_we <= 1; // Set TLB entry
-                        tlb_addr_in <= ctl_regs[CREG_TBINDEX];
-                        tlb_data_in <= ctl_regs[CREG_TBHI] | ctl_regs[CREG_TBLO];
                         end
                     default: begin // Invalid instruction
                         $display("%m: exception invalid_grp2=0b%b", inst_hi[5:2]);
-                        raise_exception(ECAUSE_INVALID_INST);
+                        `RAISE_EXCEPTION(ECAUSE_INVALID_INST);
                         end
                     endcase
                     end
@@ -502,12 +486,12 @@ module limn2600_Core
                         4'b0001: begin
                             $display("%m: exception brk [%h]", imm22);
                             // TODO: Is imm22 used at all?
-                            raise_exception(ECAUSE_BREAKPOINT);
+                            `RAISE_EXCEPTION(ECAUSE_BREAKPOINT);
                             end
                         4'b1101: begin
                             if(opreg4 != 5'b0) begin // Raise UD
                                 $display("%m: exception invalid div inst=%b", inst);
-                                raise_exception(ECAUSE_INVALID_INST);
+                                `RAISE_EXCEPTION(ECAUSE_INVALID_INST);
                             end else begin
                                 regs[opreg1] <= regs[opreg2] / regs[opreg3];
                             end
@@ -515,7 +499,7 @@ module limn2600_Core
                         4'b1100: begin
                             if(opreg4 != 5'b0) begin // Raise UD
                                 $display("%m: exception invalid divs inst=%b", inst);
-                                raise_exception(ECAUSE_INVALID_INST);
+                                `RAISE_EXCEPTION(ECAUSE_INVALID_INST);
                             end else begin // TODO: Properly perform signed division
                                 regs[opreg1] <= { (regs[opreg2][31] | regs[opreg3][31]), regs[opreg2][30:0] / regs[opreg3][30:0] };
                             end
@@ -525,20 +509,20 @@ module limn2600_Core
                         4'b1011: begin // MOD rd,ra,rb
                             if(opreg4 != 5'b0) begin // Raise UD
                                 $display("%m: exception invalid mod inst=%b", inst);
-                                raise_exception(ECAUSE_INVALID_INST);
+                                `RAISE_EXCEPTION(ECAUSE_INVALID_INST);
                             end else regs[opreg1] <= regs[opreg2] % regs[opreg3];
                             end
                         4'b1111: begin // MUL rd,ra,rb
                             if(opreg4 != 5'b0) begin // Raise UD
                                 $display("%m: exception invalid mul inst=%b", inst);
-                                raise_exception(ECAUSE_INVALID_INST);
+                                `RAISE_EXCEPTION(ECAUSE_INVALID_INST);
                             end else regs[opreg1] <= regs[opreg2] * regs[opreg3];
                             end
                         4'b1000: begin // TODO: Is this a memory access?
                             end
                         4'b0000: begin
                             $display("%m: exception sys [%h]", imm22); // TODO: Is imm22 used at all?
-                            raise_exception(ECAUSE_SYSCALL);
+                            `RAISE_EXCEPTION(ECAUSE_SYSCALL);
                             end
                         default: begin
                             end
@@ -546,16 +530,16 @@ module limn2600_Core
                     end
                 default: begin
                     $display("%m: exception invalid_opcode,inst=%b", inst);
-                    raise_exception(ECAUSE_INVALID_INST);
+                    `RAISE_EXCEPTION(ECAUSE_INVALID_INST);
                 end
             endcase
         end else if(ex_state == SE_GET_TLB_ENTRY) begin // TODO: RDY for TLB
-            ctl_regs[CREG_TBHI] <= tlb_data_out; // TODO: Is this correct?
-            ctl_regs[CREG_TBLO] <= tlb_data_out;
+            ctl_regs[CREG_TBHI] <= tlb_data_out[63:32]; // TODO: Is this correct?
+            ctl_regs[CREG_TBLO] <= tlb_data_out[31:0];
             pc <= pc;
         end else if(ex_state == SE_GET_TLB_FN) begin // TODO: RDY for TLB
             // By now data from the TLB has arrived, negative values will be given for indicating NOT-FOUND
-            ctl_regs[CREG_TBINDEX] <= tlb_data_out;
+            ctl_regs[CREG_TBINDEX] <= tlb_data_out[31:0];
             pc <= pc;
         end
         if(rst) begin
@@ -575,103 +559,4 @@ module limn2600_Core
             $display("%m: %2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h,%2d=0x%8h", i, regs[i], i + 1, regs[i + 1], i + 2, regs[i + 2], i + 3, regs[i + 3], i + 4, regs[i + 4], i + 5, regs[i + 5], i + 6, regs[i + 6], i + 7, regs[i + 7]);
         end
     end
-endmodule
-
-///////////////////////////////////////////////////////////////////////////////
-//
-// Limn2600 Core
-//
-// Executes an instruction, multiple instances of this module are used
-// for executing the whole instruction queue
-//
-///////////////////////////////////////////////////////////////////////////////
-module limn2600_CPU
-#( // Parameters
-    parameter NUM_CORES = 4
-)
-( // Interface
-    input rst,
-    input clk,
-    input irq,
-    output [31:0] addr,
-    input [31:0] data_in,
-    output [31:0] data_out,
-    input rdy, // Whetever we can fetch instructions
-    output we, // Write-Enable (1 = we want to write, 0 = we want to read)
-    output ce // Command-State (1 = memory commands active, 0 = memory commands ignored)
-);
-    wire [31:0] core1_read_addr;
-    wire [31:0] core1_read_value;
-    wire [1:0] core1_read_size;
-    wire core1_read_enable;
-    wire core1_read_rdy;
-    wire [31:0] core1_read_addr_in;
-
-    wire [31:0] core1_write_addr;
-    wire [31:0] core1_write_value;
-    wire [1:0] core1_write_size;
-    wire core1_write_enable;
-    wire core1_write_rdy;
-    wire core1_full;
-    wire core1_flush;
-    limn2600_MemorySched msched(
-        .rst(rst),
-        .clk(clk),
-        .ram_addr(addr),
-        .ram_data_in(data_in),
-        .ram_data_out(data_out),
-        .ram_rdy(rdy),
-        .ram_we(we),
-        .ram_ce(ce),
-        .client_read_addr(core1_read_addr),
-        .client_read_value(core1_read_value),
-        .client_read_size(core1_read_size),
-        .client_read_enable(core1_read_enable),
-        .client_read_rdy(core1_read_rdy),
-        .client_read_addr_in(core1_read_addr_in),
-        .client_write_addr(core1_write_addr),
-        .client_write_value(core1_write_value),
-        .client_write_size(core1_write_size),
-        .client_write_enable(core1_write_enable),
-        .client_write_rdy(core1_write_rdy),
-        .full(core1_full),
-        .flush(core1_flush)
-    );
-
-    limn2600_Core core1(
-        .rst(rst),
-        .clk(clk),
-        .irq(irq),
-        .read_addr(core1_read_addr),
-        .read_value(core1_read_value),
-        .read_size(core1_read_size),
-        .read_enable(core1_read_enable),
-        .read_rdy(core1_read_rdy),
-        .read_addr_in(core1_read_addr_in),
-        .write_addr(core1_write_addr),
-        .write_value(core1_write_value),
-        .write_size(core1_write_size),
-        .write_enable(core1_write_enable),
-        .write_rdy(core1_write_rdy),
-        .full(core1_full),
-        .flush(core1_flush)
-    );
-/*
-    generate
-        genvar i;
-        for(i = 0; i < NUM_CORES; i++) begin
-            limn2600_Core core[0:NUM_CORES - 1](
-                .rst(rst),
-                .clk(clk),
-                .irq(irq),
-                .addr(addr),
-                .data_in(data_in),
-                .data_out(data_out),
-                .rdy(rdy),
-                .we(we),
-                .ce(ce)
-            );
-        end
-    endgenerate
-*/
 endmodule

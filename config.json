@@ -1,0 +1,27 @@
+{
+    "DESIGN_NAME": "l2k_cpu",
+    "VERILOG_FILES": "dir::rtl/kinnow/l2k_cpu.sv",
+    "CLOCK_PORT": "clk",
+    "CLOCK_NET": "ref::$CLOCK_PORT",
+    "FP_SIZING": "absolute",
+    "DIE_AREA": [ 0, 0, 500, 500 ],
+    "SYNTH_NO_FLAT": true,
+    "pdk::sky130*": {
+        "CLOCK_PERIOD": 20,
+        "SYNTH_MAX_FANOUT": 6,
+        "FP_CORE_UTIL": 40,
+        "scl::sky130_fd_sc_hd": {
+            "SYNTH_STRATEGY": "DELAY 2"
+        },
+        "scl::sky130_fd_sc_hs": {
+            "FP_CORE_UTIL": 35
+        },
+        "scl::sky130_fd_sc_ms": {
+            "FP_CORE_UTIL": 35
+        }
+    },
+    "pdk::gf180mcu*": {
+        "DIODE_INSERTION_STRATEGY": "6",
+        "PL_TARGET_DENSITY": 0.62
+    }
+}

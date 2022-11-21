@@ -1,12 +1,12 @@
 ///////////////////////////////////////////////////////////////////////////////
 //
-// Limn2600 Cache
+// Limn2600 l2k_cache
 //
 ///////////////////////////////////////////////////////////////////////////////
-module limn2600_Cache
+module l2k_cache
 #( // Parameter
     parameter DATA_WIDTH = 32,
-    parameter NUM_ENTRIES = 4096
+    parameter NUM_ENTRIES = 512
 )
 ( // Interface
     input rst,
@@ -19,8 +19,8 @@ module limn2600_Cache
     // TODO: RDY output state wire
 );
     integer i;
-    function [DATA_WIDTH - 1:0] hash_result(
-        input [DATA_WIDTH - 1:0] x
+    function [31:0] hash_result(
+        input [31:0] x
     );
         // https://stackoverflow.com/questions/664014/what-integer-hash-function-are-good-that-accepts-an-integer-hash-key
         // x = ((x >> 16) ^ x) * 0x45d9f3b;
@@ -30,7 +30,7 @@ module limn2600_Cache
     endfunction
 
     reg [DATA_WIDTH - 1:0] cache[0:NUM_ENTRIES - 1];
-    always @(posedge clk) begin
+    always @* begin
         if(rst) begin
             $display("%m: Reset");
             for(i = 0; i < NUM_ENTRIES; i++) begin
@@ -42,7 +42,6 @@ module limn2600_Cache
     assign data_out = cache[hash_result(addr_out) & (NUM_ENTRIES - 1)];
     always @(posedge clk) begin
         $display("%m: k_out=0x%h,v_out=0x%h,k_in=0x%h,v_in=0x%h,we=%b,k_out_hash=0x%h,k_in_hash=0x%h", addr_out, data_out, addr_in, data_in, we, hash_result(addr_out), hash_result(addr_in));
-
         for(i = 0; i < NUM_ENTRIES; i++) begin
             if(we && i == (hash_result(addr_in) & (NUM_ENTRIES - 1))) begin
                 $display("%m: cache #%2d(0x%8h) data=0x%h <-- IN", i, addr_in, data_in);

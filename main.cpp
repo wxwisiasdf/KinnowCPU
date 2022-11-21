@@ -13,7 +13,7 @@
 #include <SDL2/SDL_ttf.h>
 
 // Project
-#include "Vlimn2600_System.h"
+#include "Vl2k_soc.h"
 
 #define SCREEN_WIDTH 1280
 #define SCREEN_HEIGHT 800
@@ -36,7 +36,7 @@ int main(int argc, char **argv, char **env)
         throw std::runtime_error(std::string("Renderer creation failed: ") + SDL_GetError());
 
     // Create the system
-    auto top = std::unique_ptr<Vlimn2600_System>(new Vlimn2600_System());
+    auto top = std::unique_ptr<Vl2k_soc>(new Vl2k_soc());
 
     Verilated::debug(0);
     Verilated::randReset(2);
@@ -149,7 +149,7 @@ int main(int argc, char **argv, char **env)
             SDL_QueryTexture(rom_texture, NULL, NULL, &w, &h);
             dstrect.w = w * 2 * magnify;
             dstrect.h = h * 2 * magnify;
-            SDL_UpdateTexture(rom_texture, NULL, &top->limn2600_System__DOT__SRAM__DOT__rom, w * sizeof(IData));
+            SDL_UpdateTexture(rom_texture, NULL, &top->l2k_soc__DOT__ROM__DOT__rom, w * sizeof(IData));
             SDL_RenderCopy(renderer, rom_texture, NULL, &dstrect);
             left_padding += dstrect.w;
         }
@@ -161,7 +161,7 @@ int main(int argc, char **argv, char **env)
             SDL_QueryTexture(ram_texture, NULL, NULL, &w, &h);
             dstrect.w = w * 2 * magnify;
             dstrect.h = h * 2 * magnify;
-            SDL_UpdateTexture(ram_texture, NULL, &top->limn2600_System__DOT__SRAM__DOT__ram, w * sizeof(IData));
+            SDL_UpdateTexture(ram_texture, NULL, &top->l2k_soc__DOT__RAM__DOT__nvram, w * sizeof(IData));
             SDL_RenderCopy(renderer, ram_texture, NULL, &dstrect);
             left_padding += dstrect.w;
         }
@@ -173,7 +173,7 @@ int main(int argc, char **argv, char **env)
             SDL_QueryTexture(nvram_texture, NULL, NULL, &w, &h);
             dstrect.w = w * 2 * magnify;
             dstrect.h = h * 2 * magnify;
-            SDL_UpdateTexture(nvram_texture, NULL, &top->limn2600_System__DOT__SRAM__DOT__nvram, w * sizeof(IData));
+            SDL_UpdateTexture(nvram_texture, NULL, &top->l2k_soc__DOT__NVRAM__DOT__nvram, w * sizeof(IData));
             SDL_RenderCopy(renderer, nvram_texture, NULL, &dstrect);
             left_padding += dstrect.w;
         }

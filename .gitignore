@@ -1,8 +1,8 @@
 *.o
 *.txt
-*.json
 *.bin
 *.dot
 obj_dir/
 gcc/
 build-gcc/
+.vscode/
