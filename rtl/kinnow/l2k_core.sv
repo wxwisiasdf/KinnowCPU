@@ -66,8 +66,29 @@ module l2k_core
     write_size <= a_size; \
     write_enable <= 1;
 
-`define REGISTER_AVAILABLE(regno) \
-    (((read_regno == regno) & read_enable) == 0)
+    reg regs_lifetime[0:31];
+`define REG_MARK_INUSE(regno) regs_lifetime[regno] <= 1
+`define REG_MARK_UNUSED(regno) regs_lifetime[regno] <= 0
+`define REG_CAN_READ_YET(regno) (regs_lifetime[regno] == 0)
+
+`define REG_BLOCK_AWAIT(regno) \
+    if(regs_lifetime[regno] == 1) begin pc <= pc; end
+
+// Use this when a register is overwritten, for example this helps us in the case
+// where we have to deal with assembly such as
+//      lui lr, 0xffff ;<-- Writing
+//      jal label ;<-- Result immediately discarded
+//  label:
+//
+// So we discard the read
+`define REG_DISCARD(regno) \
+    `REG_MARK_UNUSED(regno); \
+    /* Side effect-variable redirected to R0 (no-op) */ \
+    if(read_regno == regno) begin read_regno <= 0; end
+
+`define REG_ASSIGN(regno, v) \
+    `REG_DISCARD(regno); \
+    regs[regno] <= v;
 
     function [31:0] do_alu_shift(
         input [31:0] a,
@@ -228,10 +249,12 @@ module l2k_core
                 $display("%m: SI_READ");
                 read_enable <= 1;
                 read_addr <= saved_read_addr;
+                `REG_MARK_INUSE(read_regno);
                 if(read_rdy) begin
                     if(read_addr == saved_read_addr) begin
                         $display("%m: SI_READ; received=0x%h", read_value);
                         regs[read_regno] <= read_value;
+                        `REG_MARK_UNUSED(read_regno);
                         `PERFORM_FETCH(pc);
                     end else begin // Unrelated data, send to i-cache
                         $display("%m: SI_FETCH; pc=0x%8h,ir=0x%8h", read_addr_in, read_value);
@@ -271,7 +294,7 @@ module l2k_core
     always @(posedge clk) begin
         if(ex_state == SE_EXECUTE) begin
             $display("%m: SE_EXECUTE; Execution inst=0x%h<%b>,pc=0x%h", inst, inst, pc);
-            pc <= pc + 4; // By default advance one instruction, can of course be overriden because this is combinatorial ;)
+            pc <= pc; // By default advance one instruction, can of course be overriden because this is combinatorial ;)
             casez(inst_lo)
                 // This is an invalid opcode, but used internally as a "true no-op", no PC is modified
                 // no anything is modified, good for continuing the executor without stalling
@@ -281,33 +304,38 @@ module l2k_core
                     end
                 6'b11_1000: begin // JALR [rd], [ra], [imm29]
                     $display("%m: jalr r%0d,r%0d,[%h]", opreg1, opreg2, { 8'h0, imm16 } << 2);
-                    regs[opreg1] <= pc + 4;
-                    if(imm21[15] == 1) begin // Negative
-                        `BRANCH_TO(regs[opreg2] - (4 + ({ 17'h0, ~imm16[14:0] } << 2)));
-                    end else begin // Positive
-                        `BRANCH_TO(regs[opreg2] + ({ 16'h0, imm16 } << 2));
+                    if(`REG_CAN_READ_YET(opreg2)) begin
+                        `REG_ASSIGN(opreg1, pc + 4);
+                        if(imm21[15] == 1) begin // Negative
+                            `BRANCH_TO(regs[opreg2] - (4 + ({ 17'h0, ~imm16[14:0] } << 2)));
+                        end else begin // Positive
+                            `BRANCH_TO(regs[opreg2] + ({ 16'h0, imm16 } << 2));
+                        end
                     end
                     end
                 6'b??_?11?: begin // JAL [imm29]
                     $display("%m: jal [0x%8h],lr=0x%8h", { 3'h0, imm29 } << 2, pc + 4);
                     if(inst[0] == 1) begin
-                        regs[REG_LR] <= pc + 4;
+                        `REG_ASSIGN(REG_LR, pc + 4);
                     end
                     `BRANCH_TO((pc & 32'h80000000) | ({ 3'h0, imm29 } << 2));
                     end
                 6'b??_?101: begin // Branches ra, [imm21]
-                    if(compare_result(inst_lo[5:3], regs[opreg1])) begin
-                        $display("%m: Branch taken!");
-                        if(imm21[20] == 1) begin // Negative
-                            $display("%m: bx r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
-                            `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
-                        end else begin // Positive
+                    if(`REG_CAN_READ_YET(opreg1)) begin
+                        if(compare_result(inst_lo[5:3], regs[opreg1])) begin
+                            $display("%m: Branch taken!");
+                            if(imm21[20] == 1) begin // Negative
+                                $display("%m: bx r%0d,[-%0d]", opreg1, 4 + ({ 12'h0, ~imm21[19:0] } << 2));
+                                `BRANCH_TO(pc - (4 + ({ 12'h0, ~imm21[19:0] } << 2)));
+                            end else begin // Positive
+                                $display("%m: bx r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
+                                `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
+                            end
+                        end else begin
+                            $display("%m: Branch NOT taken!");
                             $display("%m: bx r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
-                            `BRANCH_TO(pc + ({ 12'h0, imm21[19:0] } << 2));
+                            pc <= pc + 4;
                         end
-                    end else begin
-                        $display("%m: Branch NOT taken!");
-                        $display("%m: bx r%0d,[%0d]", opreg1, { 12'h0, imm21[19:0] } << 2);
                     end
                     end
                 // ADDI [rd], [rd], [imm16]
@@ -319,65 +347,82 @@ module l2k_core
                 // ORI [rd], [rd], [imm16]
                 // LUI [rd], [rd], [imm16]
                 6'b??_?100: begin
-                    $display("%m: imm_alu_inst r%0d,r%0d,[0x%h]", opreg1, opreg2, imm16);
-                    if(inst_lo[5:3] == 0) begin // LUI
-                        $display("%m: lui r%0d,r%0d,[0x%h]", opreg1, opreg2, imm16);
-                        regs[opreg1] <= regs[opreg2] | ({ 16'b0, imm16 } << 16);
-                        // TODO: Fuse OPS for example LA comes as LUI+ORI
-                    end else begin // Rest of ops
-                        regs[opreg1] <= alu_imm_out;
+                    if(`REG_CAN_READ_YET(opreg2)) begin
+                        $display("%m: imm_alu_inst r%0d,r%0d,[0x%h]", opreg1, opreg2, imm16);
+                        if(inst_lo[5:3] == 0) begin // LUI
+                            $display("%m: lui r%0d,r%0d,[0x%h]", opreg1, opreg2, imm16);
+                            `REG_ASSIGN(opreg1, regs[opreg2] | ({ 16'b0, imm16 } << 16));
+                            // TODO: Fuse OPS for example LA comes as LUI+ORI
+                        end else begin // Rest of ops
+                            `REG_ASSIGN(opreg1, alu_imm_out);
+                        end
+                        pc <= pc + 4;
                     end
                     end
                 6'b1?_?011: begin // MOV rd, [rs + imm16]
-                    $display("%m: mov(5)(R) r%0d,[r%0d+%h],sz=%b", opreg1, opreg2, { 8'h0, imm16 }, mov_simple_tsz);
-                    `READ_IN(regs[opreg2] + ({ 16'h0, imm16} << (~mov_simple_tsz)), opreg1, mov_simple_tsz);
+                    if(`REG_CAN_READ_YET(opreg2)) begin
+                        $display("%m: mov(5)(R) r%0d,[r%0d+%h],sz=%b", opreg1, opreg2, { 8'h0, imm16 }, mov_simple_tsz);
+                        `READ_IN(regs[opreg2] + ({ 16'h0, imm16} << (~mov_simple_tsz)), opreg1, mov_simple_tsz);
+                        pc <= pc + 4;
+                    end
                     end
                 6'b??_?010: begin // MOV [ra + imm16], rb
-                    if(inst_lo[5] == 1) begin // Move register to memory
-                        $display("%m: mov(16)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 } << (~mov_simple_tsz), opreg2, mov_simple_tsz);
-                        `WRITE_OUT(regs[opreg1] + ({ 16'h0, imm16} << (~mov_simple_tsz)), regs[opreg2], ~mov_simple_tsz);
-                    end else begin // Move immediate to memory
-                        $display("%m: mov(5)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 } << (~mov_simple_tsz), opreg2, mov_simple_tsz);
-                        `WRITE_OUT(regs[opreg1] + ({ 16'h0, imm16} << (~mov_simple_tsz)), { 27'h0, imm5 }, ~mov_simple_tsz);
+                    if(`REG_CAN_READ_YET(opreg1) && `REG_CAN_READ_YET(opreg2)) begin
+                        if(inst_lo[5] == 1) begin // Move register to memory
+                            $display("%m: mov(16)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 } << (~mov_simple_tsz), opreg2, mov_simple_tsz);
+                            `WRITE_OUT(regs[opreg1] + ({ 16'h0, imm16} << (~mov_simple_tsz)), regs[opreg2], ~mov_simple_tsz);
+                        end else begin // Move immediate to memory
+                            $display("%m: mov(5)(W) [r%0d+%h],r%0d,sz=%b", opreg1, { 16'h0, imm16 } << (~mov_simple_tsz), opreg2, mov_simple_tsz);
+                            `WRITE_OUT(regs[opreg1] + ({ 16'h0, imm16} << (~mov_simple_tsz)), { 27'h0, imm5 }, ~mov_simple_tsz);
+                        end
+                        pc <= pc + 4;
                     end
                     end
                 // Instructions starting with 111001
                 6'b11_1001: begin
-                    $display("%m: alu_inst r%0d,r%0d,(r%0d %b %0d),op=%b", opreg1, opreg2, opreg3, opg1_instmode, imm5_lo, inst_hi);
-                    casez(inst_hi[5:2]) // Check for special operators
-                        4'b0000: begin // NOR ra,rb,rd
-                            $display("%m: nor");
-                            regs[opreg1] <= ~(regs[opreg2] | do_alu_shift(regs[opreg3], { 27'h0, imm5_lo }, opg1_instmode));
-                            end
-                        4'b11??: begin // Move-From-Registers
-                            $display("%m: mov(W)(REG) [r%0d+r%0d+%d],r%0d,sz=%b", opreg2, opreg3, imm5_lo, opreg1, mov_comp_tsz);
-                            `WRITE_OUT(regs[opreg2] + (do_alu_shift(regs[opreg3], { 27'h0, imm5_lo }, opg1_instmode) << (~mov_comp_tsz)), regs[opreg1], ~mov_comp_tsz);
-                            end
-                        4'b10??: begin // Move-To-Register
-                            $display("%m: mov(R)(REG) r%0d,[r%0d+r%0d+%d],sz=%b", opreg1, opreg2, opreg3, imm5_lo, mov_comp_tsz);
-                            `READ_IN(regs[opreg2] + (do_alu_shift(regs[opreg3], { 27'h0, imm5_lo }, opg1_instmode) << (~mov_comp_tsz)), opreg1, ~mov_comp_tsz);
-                            end
-                        default: begin // Assume this is a general l2k_alu OP and perform a normal operation
-                            regs[opreg1] <= alu_reg_out;
-                            end
-                    endcase
+                    if(`REG_CAN_READ_YET(opreg2) && `REG_CAN_READ_YET(opreg3)) begin
+                        $display("%m: alu_inst r%0d,r%0d,(r%0d %b %0d),op=%b", opreg1, opreg2, opreg3, opg1_instmode, imm5_lo, inst_hi);
+                        casez(inst_hi[5:2]) // Check for special operators
+                            4'b0000: begin // NOR ra,rb,rd
+                                $display("%m: nor");
+                                `REG_ASSIGN(opreg1, ~(regs[opreg2] | do_alu_shift(regs[opreg3], { 27'h0, imm5_lo }, opg1_instmode)));
+                                end
+                            4'b11??: begin // Move-From-Registers
+                                $display("%m: mov(W)(REG) [r%0d+r%0d+%d],r%0d,sz=%b", opreg2, opreg3, imm5_lo, opreg1, mov_comp_tsz);
+                                `WRITE_OUT(regs[opreg2] + (do_alu_shift(regs[opreg3], { 27'h0, imm5_lo }, opg1_instmode) << (~mov_comp_tsz)), regs[opreg1], ~mov_comp_tsz);
+                                end
+                            4'b10??: begin // Move-To-Register
+                                $display("%m: mov(R)(REG) r%0d,[r%0d+r%0d+%d],sz=%b", opreg1, opreg2, opreg3, imm5_lo, mov_comp_tsz);
+                                `READ_IN(regs[opreg2] + (do_alu_shift(regs[opreg3], { 27'h0, imm5_lo }, opg1_instmode) << (~mov_comp_tsz)), opreg1, ~mov_comp_tsz);
+                                end
+                            default: begin // Assume this is a general l2k_alu OP and perform a normal operation
+                                `REG_ASSIGN(opreg1, alu_reg_out);
+                                end
+                        endcase
+                        pc <= pc + 4;
+                    end
                     end
                 6'b10_1001: begin
                     $display("%m: privileged_inst");
                     casez(inst_hi[5:2])
                     4'b1111: begin // MFCR [opreg1] [opreg3]
                         $display("%m: mfcr r%0d,cr%0d", opreg1, opreg3);
-                        regs[opreg1] <= ctl_regs[opreg3];
+                        `REG_ASSIGN(opreg1, ctl_regs[opreg3]);
+                        pc <= pc + 4;
                         end
                     4'b1110: begin // MTCR [opreg3] [opreg2]
-                        $display("%m: mtcr cr%0d,r%0d", opreg3, opreg2);
-                        ctl_regs[opreg3] <= regs[opreg2];
+                        if(`REG_CAN_READ_YET(opreg2)) begin
+                            $display("%m: mtcr cr%0d,r%0d", opreg3, opreg2);
+                            ctl_regs[opreg3] <= regs[opreg2];
+                            pc <= pc + 4;
+                        end
                         end
                     4'b1000: begin // CACHEI [imm22]
                         $display("%m: cachei [%h]", imm22);
                         if(imm22 == 5) begin
                             ex_state <= SE_WAIT_FETCH;
                         end
+                        pc <= pc + 4;
                         end
                     4'b1010: begin // FWC [imm22]
                         $display("%m: exception firmware");
@@ -388,23 +433,28 @@ module l2k_core
                     4'b1100: begin // HLT [imm22]
                         $display("%m: hlt [%h]", imm22);
                         ex_state <= SE_HALT;
+                        pc <= pc + 4;
                         end
                     4'b0011: begin // TBLD
                         $display("%m: tbld [%h]", imm22);
                         ctl_regs[CREG_TBLO] <= { 12'h0, (ctl_regs[CREG_TBLO][24:5] << 12) } | { 22'h0, (ctl_regs[CREG_TBHI][9:0] << 2) };
+                        pc <= pc + 4;
                         end
                     4'b0010: begin // TBLO
                         $display("%m: tblo [%0d]", imm22);
                         ex_state <= SE_GET_TLB_ENTRY; // Next cycle is guaranteed to output in tlb_data_out the given tlb
+                        pc <= pc + 4;
                         end
                     4'b0001: begin // TBFN
                         $display("%m: tbfn [%0d]", imm22);
                         ex_state <= SE_GET_TLB_FN;
                         //tlb_data_in <= ctl_regs[CREG_TBLO];
+                        pc <= pc + 4;
                         end
                     4'b0000: begin // TBWR
                         $display("%m: tbwr [%0d]", imm22);
                         //tlb_we <= 1; // Set TLB entry
+                        pc <= pc + 4;
                         end
                     default: begin // Invalid instruction
                         $display("%m: exception invalid_grp2=0b%b", inst_hi[5:2]);
@@ -424,16 +474,18 @@ module l2k_core
                             if(opreg4 != 5'b0) begin // Raise UD
                                 $display("%m: exception invalid div inst=%b", inst);
                                 `RAISE_EXCEPTION(ECAUSE_INVALID_INST);
-                            end else begin
+                            end else if(`REG_CAN_READ_YET(opreg2) && `REG_CAN_READ_YET(opreg3)) begin
                                 regs[opreg1] <= regs[opreg2] / regs[opreg3];
+                                pc <= pc + 4;
                             end
                             end
                         4'b1100: begin
                             if(opreg4 != 5'b0) begin // Raise UD
                                 $display("%m: exception invalid divs inst=%b", inst);
                                 `RAISE_EXCEPTION(ECAUSE_INVALID_INST);
-                            end else begin // TODO: Properly perform signed division
-                                regs[opreg1] <= { (regs[opreg2][31] | regs[opreg3][31]), regs[opreg2][30:0] / regs[opreg3][30:0] };
+                            end else if(`REG_CAN_READ_YET(opreg2) && `REG_CAN_READ_YET(opreg3)) begin
+                                regs[opreg1] <= $signed(regs[opreg2]) / $signed(regs[opreg3]);
+                                pc <= pc + 4;
                             end
                             end
                         4'b1001: begin // TODO: Is this a memory access?
@@ -442,21 +494,31 @@ module l2k_core
                             if(opreg4 != 5'b0) begin // Raise UD
                                 $display("%m: exception invalid mod inst=%b", inst);
                                 `RAISE_EXCEPTION(ECAUSE_INVALID_INST);
-                            end else regs[opreg1] <= regs[opreg2] % regs[opreg3];
+                            end else if(`REG_CAN_READ_YET(opreg2) && `REG_CAN_READ_YET(opreg3)) begin
+                                regs[opreg1] <= regs[opreg2] % regs[opreg3];
+                                pc <= pc + 4;
+                            end
                             end
                         4'b1111: begin // MUL rd,ra,rb
                             if(opreg4 != 5'b0) begin // Raise UD
                                 $display("%m: exception invalid mul inst=%b", inst);
                                 `RAISE_EXCEPTION(ECAUSE_INVALID_INST);
-                            end else regs[opreg1] <= regs[opreg2] * regs[opreg3];
+                            end else if(`REG_CAN_READ_YET(opreg2) && `REG_CAN_READ_YET(opreg3)) begin
+                                regs[opreg1] <= regs[opreg2] * regs[opreg3];
+                                pc <= pc + 4;
+                            end
                             end
                         4'b1000: begin // TODO: Is this a memory access?
+                            $display("%m: exception invalid_opcode,inst=%b", inst);
+                            `RAISE_EXCEPTION(ECAUSE_INVALID_INST);
                             end
                         4'b0000: begin
                             $display("%m: exception sys [%h]", imm22); // TODO: Is imm22 used at all?
                             `RAISE_EXCEPTION(ECAUSE_SYSCALL);
                             end
                         default: begin
+                            $display("%m: exception invalid_opcode,inst=%b", inst);
+                            `RAISE_EXCEPTION(ECAUSE_INVALID_INST);
                             end
                     endcase
                     end
