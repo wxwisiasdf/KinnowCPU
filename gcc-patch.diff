@@ -110,7 +110,7 @@ index 00000000000..2afa6310e44
 +extern enum reg_class limn2600_regno_reg_class (int);
 diff --git a/gcc/config/limn2600/limn2600.cc b/gcc/config/limn2600/limn2600.cc
 new file mode 100644
-index 00000000000..2ea5617ab6f
+index 00000000000..9695ddf2e44
 --- /dev/null
 +++ b/gcc/config/limn2600/limn2600.cc
 @@ -0,0 +1,704 @@
@@ -415,7 +415,7 @@ index 00000000000..2ea5617ab6f
 +  {
 +    if (df_regs_ever_live_p(regno) && !call_used_or_fixed_reg_p(regno))
 +    {
-+      insn = emit_insn(gen_movsi_push(gen_rtx_REG(Pmode, regno)));
++      insn = emit_insn(gen_movsi_push(gen_rtx_REG(Pmode, LIMN2600_SP), gen_rtx_REG(Pmode, regno)));
 +      RTX_FRAME_RELATED_P(insn) = 1;
 +    }
 +  }
@@ -1253,7 +1253,7 @@ index 00000000000..7b482286217
 +#endif /* GCC_LIMN2600_H */
 diff --git a/gcc/config/limn2600/limn2600.md b/gcc/config/limn2600/limn2600.md
 new file mode 100644
-index 00000000000..3722e5bf8c5
+index 00000000000..39d1e4a2de9
 --- /dev/null
 +++ b/gcc/config/limn2600/limn2600.md
 @@ -0,0 +1,416 @@
@@ -1436,17 +1436,17 @@ index 00000000000..3722e5bf8c5
 +
 +;; Push a register onto the stack
 +(define_insn "movsi_push"
-+  [(set (mem:SI (pre_dec:SI (reg:SI 30)))
++  [(set (mem:SI (pre_dec:SI (match_operand:SI 1 "register_operand" "=r")))
 +  	(match_operand:SI 0 "register_operand" "r"))]
 +  ""
-+  "push\\t$sp, %0")
++  "mov\\tlong [%0], %1\\n\\taddi\\t%0, 4")
 +
 +;; Pop a register from the stack
 +(define_insn "movsi_pop"
 +  [(set (match_operand:SI 1 "register_operand" "=r")
 +  	(mem:SI (post_inc:SI (match_operand:SI 0 "register_operand" "r"))))]
 +  ""
-+  "pop\\t%0, %1")
++  "subi\\t%0, 4\\n\\tmov\\t%1 long [%0]")
 +
 +(define_mode_iterator MODE [HI QI SI])
 +(define_mode_attr opmode [(HI "hi") (QI "qi") (SI "si")])
