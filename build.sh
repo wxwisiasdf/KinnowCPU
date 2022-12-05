@@ -1,5 +1,5 @@
 #!/bin/sh
-rm system.o
+[ ! -f system.o ] || rm system.o
 verilator \
     --top-module l2k_soc -I./rtl -I./rtl/kinnow \
     -O3 --cc --exe --build --Wall -Wno-fatal \
