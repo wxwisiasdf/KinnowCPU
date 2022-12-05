@@ -5,18 +5,16 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 `include "defines.sv"
-`include "l2k_cache.sv"
 
 module l2k_mmu
 ( // Interface
     input rst,
     input clk,
-    input irq,
-    input flush,
-    input [31:0] read_addr_in,
-    output [31:0] read_addr_out,
-    input [31:0] write_addr_in,
-    output [31:0] write_addr_out
+    input [31:0] addr_in,
+    output [31:0] addr_out,
+    input [31:0] entry_addr_in,
+    input [63:0] entry_in,
+    input [1:0] cmd
 );
     typedef struct packed {
         bit [20:0] vpn;
@@ -30,17 +28,31 @@ module l2k_mmu
         bit [(31 - 25):(25 - 25)] avail;
     } tlb_entry;
 
-    // TLB cache
-    reg tlb_we;
-    wire [63:0] tlb_data_out;
-    l2k_cache #(.NUM_ENTRIES(128), .DATA_WIDTH(64)) tlb_cache(
-        .rst(rst),
-        .clk(clk),
-        .we(tlb_we),
-        .addr_in(ctl_regs[CREG_TBINDEX]),
-        .data_in({ ctl_regs[CREG_TBHI], ctl_regs[CREG_TBLO] }),
-        .addr_out(ctl_regs[CREG_TBINDEX]),
-        .data_out(tlb_data_out)
-    );
+    reg enabled;
+    tlb_entry tlb[0:63];
+    integer i;
 
+    localparam
+        CMD_WRITE = 0;
+
+    assign addr_out = enabled ? tlb[addr_in[17:12]] : addr_in;
+
+    always @(posedge clk) begin
+        if(rst) begin
+            enabled <= 0;
+            for (i = 0; i < 64; i++) begin
+                tlb[i] <= 0;
+            end
+        end
+    end
+
+    always @(posedge clk) begin
+        if(cmd == CMD_WRITE) begin
+            for (i = 0; i < 64; i++) begin
+                if (i == { 26'h0, entry_addr_in[17:12] }) begin
+                    tlb[i] <= entry_in;
+                end
+            end
+        end
+    end
 endmodule
