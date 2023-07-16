@@ -23,9 +23,7 @@ int main(int argc, char **argv, char **env)
 {
     SDL_Color colors[256];
     for(size_t i = 0; i < 256; i++)
-    {
         colors[i].r = colors[i].g = colors[i].b = (Uint8)i;
-    }
 
     auto *window = SDL_CreateWindow("Limn2600", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SCREEN_WIDTH, SCREEN_HEIGHT, SDL_WINDOW_SHOWN);
     if (!window)

@@ -33,7 +33,8 @@ module l2k_mmu
     integer i;
 
     localparam
-        CMD_WRITE = 0;
+        CMD_WRITE = 0,
+        CMD_READ = 1;
 
     assign addr_out = enabled ? tlb[addr_in[17:12]] : addr_in;
 
@@ -48,6 +49,12 @@ module l2k_mmu
 
     always @(posedge clk) begin
         if(cmd == CMD_WRITE) begin
+            for (i = 0; i < 64; i++) begin
+                if (i == { 26'h0, entry_addr_in[17:12] }) begin
+                    tlb[i] <= entry_in;
+                end
+            end
+        end else if(cmd == CMD_READ) begin
             for (i = 0; i < 64; i++) begin
                 if (i == { 26'h0, entry_addr_in[17:12] }) begin
                     tlb[i] <= entry_in;
