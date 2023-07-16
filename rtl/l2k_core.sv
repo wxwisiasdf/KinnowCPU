@@ -103,14 +103,14 @@ module l2k_core
         endcase
     endfunction
 
-    // jjjj jjjj jjjj jjjj jjjj jaaa aa11 1101			beq  ra, imm21		if (ra == 0) pc = pc + signext(j)<<2			
-    // jjjj jjjj jjjj jjjj jjjj jaaa aa11 0101			bne  ra, imm21		if (ra != 0) pc = pc + signext(j)<<2			
-    // jjjj jjjj jjjj jjjj jjjj jaaa aa10 1101			blt  ra, imm21		if (ra  < 0) pc = pc + signext(j)<<2			
-    // jjjj jjjj jjjj jjjj jjjj jaaa aa10 0101			bgt  ra, imm21		if (ra  > 0) pc = pc + signext(j)<<2			
-    // jjjj jjjj jjjj jjjj jjjj jaaa aa01 1101			bge  ra, imm21		if (ra >= 0) pc = pc + signext(j)<<2			
-    // jjjj jjjj jjjj jjjj jjjj jaaa aa01 0101			ble  ra, imm21		if (ra <= 0) pc = pc + signext(j)<<2			
-    // jjjj jjjj jjjj jjjj jjjj jaaa aa00 1101			bpe  ra, imm21		if (ra&1 == 0) pc = pc + signext(j)<<2			
-    // jjjj jjjj jjjj jjjj jjjj jaaa aa00 0101			bpo  ra, imm21		if (ra&1 == 1) pc = pc + signext(j)<<2	
+    // jjjj jjjj jjjj jjjj jjjj jaaa aa11 1101			beq  ra, imm21		if (ra == 0) pc = pc + signext(j)<<2
+    // jjjj jjjj jjjj jjjj jjjj jaaa aa11 0101			bne  ra, imm21		if (ra != 0) pc = pc + signext(j)<<2
+    // jjjj jjjj jjjj jjjj jjjj jaaa aa10 1101			blt  ra, imm21		if (ra  < 0) pc = pc + signext(j)<<2
+    // jjjj jjjj jjjj jjjj jjjj jaaa aa10 0101			bgt  ra, imm21		if (ra  > 0) pc = pc + signext(j)<<2
+    // jjjj jjjj jjjj jjjj jjjj jaaa aa01 1101			bge  ra, imm21		if (ra >= 0) pc = pc + signext(j)<<2
+    // jjjj jjjj jjjj jjjj jjjj jaaa aa01 0101			ble  ra, imm21		if (ra <= 0) pc = pc + signext(j)<<2
+    // jjjj jjjj jjjj jjjj jjjj jaaa aa00 1101			bpe  ra, imm21		if (ra&1 == 0) pc = pc + signext(j)<<2
+    // jjjj jjjj jjjj jjjj jjjj jaaa aa00 0101			bpo  ra, imm21		if (ra&1 == 1) pc = pc + signext(j)<<2
     function [0:0] compare_result(
         input [2:0] op,
         input [31:0] a
@@ -128,7 +128,6 @@ module l2k_core
     endfunction
 
     // State
-    reg [31:0] tmp32; // Temporal value
     reg [31:0] regs[0:31]; // Limnstation has 32 registers
     reg [31:0] ctl_regs[0:31];
     reg [31:0] pc; // Program counter
@@ -149,10 +148,7 @@ module l2k_core
     localparam SE_EXECUTE = 1;
     localparam SE_HALT = 2;
     localparam SE_BRANCHED = 3;
-    localparam SE_GET_TLB_ENTRY = 4;
-    localparam SE_GET_TLB_FN = 5;
-    localparam SE_SET_TLB_ENTRY = 6;
-
+    
     wire [31:0] inst; // Instruction to execute
     reg icache_we;
     l2k_cache #(.NUM_ENTRIES(512)) icache_cache(
@@ -207,6 +203,21 @@ module l2k_core
         ECAUSE_PAGE_FAULT = 12,
         ECAUSE_PAGE_FAULT_WR = 13,
         ECAUSE_TLB_REFILL = 15;
+    
+    // MMU
+    typedef struct packed {
+        bit v;
+        bit write;
+        bit k;
+        bit nc;
+        bit g;
+        bit [19:0] ppn;
+        bit [6:0] avail;
+        bit [19:0] vpn;
+        bit [11:0] asid;
+    } tlb_entry;
+    reg enabled;
+    tlb_entry tlb[0:63];
 
     integer i;
 
@@ -437,23 +448,36 @@ module l2k_core
                         end
                     4'b0011: begin // TBLD
                         $display("%m: tbld [%h]", imm22);
-                        ctl_regs[CREG_TBLO] <= { 12'h0, (ctl_regs[CREG_TBLO][24:5] << 12) } | { 22'h0, (ctl_regs[CREG_TBHI][9:0] << 2) };
+                        `READ_IN({ 12'h0, (regs[opreg2][24:5] << 12) } | { 22'h0, (ctl_regs[CREG_TBHI][9:0] << 2) }, opreg2, 2'b11);
                         pc <= pc + 4;
                         end
-                    4'b0010: begin // TBLO
-                        $display("%m: tblo [%0d]", imm22);
-                        ex_state <= SE_GET_TLB_ENTRY; // Next cycle is guaranteed to output in tlb_data_out the given tlb
+                    4'b0010: begin // TBRD
+                        $display("%m: tbrd [%0d]", imm22);
+                        ctl_regs[CREG_TBLO] <= tlb[ctl_regs[CREG_TBINDEX][5:0]][31:0];
+                        ctl_regs[CREG_TBHI] <= tlb[ctl_regs[CREG_TBINDEX][5:0]][63:32];
                         pc <= pc + 4;
                         end
                     4'b0001: begin // TBFN
                         $display("%m: tbfn [%0d]", imm22);
-                        ex_state <= SE_GET_TLB_FN;
-                        //tlb_data_in <= ctl_regs[CREG_TBLO];
+                        ctl_regs[CREG_TBINDEX] <= 32'h80000000;
+`define TBFN_INDEX (((ctl_regs[CREG_TBHI] & 32'hFFFFF) & ((32'h1 << 32'h3) - 1)) | ((ctl_regs[CREG_TBHI] & 32'hFFFFF) >> 19 << 32'h3))
+                        for (i = 0; i < 1 << 2; i++) begin
+                            if ((tlb[`TBFN_INDEX * (32'h1 << 32'h2) + i] >> 32) == { 32'h0, ctl_regs[CREG_TBHI] }) begin
+                                ctl_regs[CREG_TBINDEX] <= `TBFN_INDEX * (32'h1 << 32'h2) + i;
+                            end
+                        end
                         pc <= pc + 4;
                         end
                     4'b0000: begin // TBWR
                         $display("%m: tbwr [%0d]", imm22);
-                        //tlb_we <= 1; // Set TLB entry
+                        if((ctl_regs[CREG_TBLO] & 32'h16) != 0) begin
+                            tlb[ctl_regs[CREG_TBINDEX][5:0]] <= {
+                                ctl_regs[CREG_TBHI] & 32'h000FFFFF,
+                                ctl_regs[CREG_TBLO]
+                            };
+                        end else begin
+                            tlb[ctl_regs[CREG_TBINDEX][5:0]] <= { ctl_regs[CREG_TBHI], ctl_regs[CREG_TBLO] };
+                        end
                         pc <= pc + 4;
                         end
                     default: begin // Invalid instruction
@@ -533,14 +557,6 @@ module l2k_core
                     ex_state <= SE_EXECUTE;
                 end
             end
-            pc <= pc;
-        end else if(ex_state == SE_GET_TLB_ENTRY) begin // TODO: RDY for TLB
-            //ctl_regs[CREG_TBHI] <= tlb_data_out[63:32]; // TODO: Is this correct?
-            //ctl_regs[CREG_TBLO] <= tlb_data_out[31:0];
-            pc <= pc;
-        end else if(ex_state == SE_GET_TLB_FN) begin // TODO: RDY for TLB
-            // By now data from the TLB has arrived, negative values will be given for indicating NOT-FOUND
-            //ctl_regs[CREG_TBINDEX] <= tlb_data_out[31:0];
             pc <= pc;
         end
         if(rst) begin

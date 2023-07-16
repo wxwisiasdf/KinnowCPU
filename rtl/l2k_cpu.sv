@@ -1,6 +1,5 @@
 `include "l2k_msched.sv"
 `include "l2k_core.sv"
-`include "l2k_mmu.sv"
 
 ///////////////////////////////////////////////////////////////////////////////
 //
@@ -31,7 +30,6 @@ module l2k_cpu
     wire core1_read_enable;
     wire core1_read_rdy;
     wire [31:0] core1_read_addr_in;
-
     wire [31:0] core1_write_addr;
     wire [31:0] core1_write_value;
     wire [1:0] core1_write_size;
@@ -39,22 +37,11 @@ module l2k_cpu
     wire core1_write_rdy;
     wire core1_full;
     wire core1_flush;
-
-    wire [31:0] mmu_addr_in;
-    l2k_mmu mmu(
-        .rst(rst),
-        .clk(clk),
-        .addr_in(mmu_addr_in),
-        .addr_out(addr),
-        .entry_addr_in(0),
-        .entry_in(0),
-        .cmd(0)
-    );
     
     l2k_msched memsched(
         .rst(rst),
         .clk(clk),
-        .ram_addr(mmu_read_addr_in),
+        .ram_addr(addr),
         .ram_data_in(data_in),
         .ram_data_out(data_out),
         .ram_rdy(rdy),
