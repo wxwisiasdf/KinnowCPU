@@ -19,11 +19,14 @@ CPU implementing the Limn2600 architecture.
 Clone the repository:
 ```sh
 git clone --recurse-submodules https://github.com/wxwisiasdf/KinnowCPU
+
+# LibRetro
+git clone https://github.com/libretro/libretro-super
 ```
 
-Install verilator and g++:
+Install verilator, RetroArch and g++:
 ```sh
-sudo apt install verilator g++
+sudo apt install verilator g++ retroarch-dev
 ```
 
 Build and run with:

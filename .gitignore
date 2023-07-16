@@ -1,6 +1,7 @@
 *.o
 *.txt
 *.bin
+*.so
 *.dot
 obj_dir/
 gcc/

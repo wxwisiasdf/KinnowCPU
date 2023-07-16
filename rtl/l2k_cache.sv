@@ -31,7 +31,6 @@ module l2k_cache
 
     reg [DATA_WIDTH - 1:0] cache[0:NUM_ENTRIES - 1];
     always @(posedge clk) begin
-        $display("%m: Reset");
         for(i = 0; i < NUM_ENTRIES; i++) begin
             if(rst) begin
                 cache[i] = 0;
